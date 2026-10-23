@@ -551,6 +551,9 @@ body.density-compact .card{padding:12px 14px;}
 :root[data-theme="nuit"] .vessel-flag,:root[data-theme="nuit"] .modal-vessel-flag{background:transparent;color:#F0705F;border:1px solid #F0705F;box-shadow:none;}
 :root[data-theme="nuit"][data-vessel] .main{box-shadow:inset 6px 0 0 #6E1E16;}
 :root[data-theme="nuit"] .modal.modal-vessel{border-top-color:#6E1E16;}
+.qr-box{display:flex;justify-content:center;align-items:center;min-height:180px;background:#fff;border-radius:8px;padding:8px;}
+.qr-box svg{width:200px;height:200px;}
+.invite-actions{display:flex;flex-wrap:wrap;gap:6px;}
 .copy-list{max-height:320px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:6px 10px;}
 .copy-item{display:flex;align-items:flex-start;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);}
 .copy-item:last-child{border-bottom:none;}
@@ -2287,6 +2290,8 @@ async function mergeWithRemote(remote, auto, otherLabel){
 
 /* --- emplacement des données --- */
 function dataLocationInfo(){
+  if(isRelay()) return {kind:'drive', title:'Google Drive par lien d’invitation — « '+state.driveFile.name+' »',
+    detail:'Dossier « '+(state.driveFile.folderName||'Seaway GMAO')+' » du compte Seaway, via le relais · accès de '+(state.driveFile.relay.name||'—')+(state.driveFile.relay.admin ? ' (administrateur)' : '')};
   if(state.driveFile) return {kind:'drive', title:'Google Drive — « '+state.driveFile.name+' »',
     detail: (state.driveFile.folderName ? 'Dossier « '+state.driveFile.folderName+' » · ' : '')+'compte '+(state.driveUser ? state.driveUser.email : '—')};
   if(state.dirHandle) return {kind:'folder', title:'Dossier « '+state.dirHandle.name+' » sur cet ordinateur',
@@ -2306,7 +2311,8 @@ function syncNow(){
 }
 async function openLocationModal(){
   const opts = [];
-  if(typeof driveAvailable==='function' && driveAvailable()) opts.push({value:'drive', label:'Google Drive', hint:'Synchronisation en ligne entre tous les postes, téléphones et tablettes (compte Google).', primary:true});
+  opts.push({value:'join', label:'Rejoindre avec un lien d’invitation', hint:'Données de l’équipe sur Google Drive, sans compte Google : lien envoyé par l’administrateur. Fonctionne aussi depuis le fichier ouvert en local (OneDrive, clé USB).', primary:true});
+  if(typeof driveAvailable==='function' && driveAvailable()) opts.push({value:'drive', label:'Google Drive (compte Google)', hint:'Connexion directe avec votre compte Google : il doit être inscrit par l’administrateur dans la console Google.'});
   if(FS_ACCESS_SUPPORTED){
     opts.push({value:'open', label:'Ouvrir un fichier existant sur cet ordinateur…', hint:'Fichier local, réseau ou dans un dossier synchronisé (Drive, OneDrive).'});
     opts.push({value:'create', label:'Créer un nouveau fichier…', hint:'Enregistre les données actuelles dans un nouveau fichier.'});
@@ -2315,6 +2321,7 @@ async function openLocationModal(){
   opts.push({value:'import', label:'Importer un fichier et fusionner', hint:'Pour les téléphones, tablettes et navigateurs sans accès direct aux fichiers.'});
   if(state.fileHandle || state.resumeHandle || state.driveFile || state.fileName) opts.push({value:'detach', label:'Déconnecter', hint:'Garder les données dans ce navigateur uniquement.'});
   const v = await choiceModal('Emplacement des données', 'Actuellement : '+dataLocationInfo().title+'.', opts);
+  if(v==='join') return openJoinModal();
   if(v==='drive') return driveConnect();
   if(v==='open') return openDataFile();
   if(v==='create') return saveAsDataFile();
@@ -2350,8 +2357,8 @@ function locationCard(){
   row('Emplacement utilisé', info.title, info.detail, el('span',{class:'badge '+st.badge}, st.label));
   if(state.driveFile){
     const link = parseHttpsUrl(state.driveFile.webViewLink);
-    row('Droits sur Google Drive', state.driveReadOnly ? 'Lecture seule (droit « Lecteur »)' : 'Modification (droit « Éditeur »)',
-      'Les droits se gèrent dans Google Drive, par le partage du dossier « '+(state.driveFile.folderName||'Seaway GMAO')+' ».',
+    row(isRelay() ? 'Accès aux données' : 'Droits sur Google Drive', state.driveReadOnly ? 'Lecture seule' : 'Modification',
+      isRelay() ? 'Par lien d’invitation personnel (relais Seaway) : il se révoque dans « Profils & accès › Liens actifs ».' : 'Les droits se gèrent dans Google Drive, par le partage du dossier « '+(state.driveFile.folderName||'Seaway GMAO')+' ».',
       link ? el('a',{href:link.href, target:'_blank', rel:'noopener noreferrer', class:'btn btn-ghost btn-sm'}, el('span',{html:iconExternal(14)}), 'Ouvrir dans Drive') : null);
   }
   row('Dernière synchronisation', state.lastSyncAt ? fmtDateTime(state.lastSyncAt)+' ('+fmtAgo(state.lastSyncAt)+')' : 'Jamais',
@@ -2417,6 +2424,191 @@ const DRIVE_SYNC_DELAY_MS = 4000;
 const DRIVE_API = {fetch: (url, opts)=>fetch(url, opts)}; // remplaçable par les autotests
 
 function isOnline(){ return navigator.onLine !== false; }
+/* ===================== RELAIS GOOGLE DRIVE (lien d'invitation) =====================
+   Le relais (relais/Code.gs, Google Apps Script) tourne sur le compte Google
+   qui possède les données : l'application lui envoie ses requêtes avec le
+   jeton du lien d'invitation, sans connexion Google ni validation Google.
+   Il fonctionne aussi depuis le fichier ouvert en local (OneDrive, clé USB) :
+   c'est une simple requête https, autorisée pour toutes les origines.
+   Le relais se branche sur la synchronisation Google Drive (state.driveFile,
+   avec driveFile.relay = {url, token, name, role, profileId, admin}) : même
+   fusion fiche par fiche, mêmes pièces jointes « gdrive:<id> », mêmes archives.
+   Le relais refuse une écriture si le fichier a changé depuis la dernière
+   lecture (révision) : l'application refusionne et réessaie. */
+const RELAY_API = {fetch: (url, opts)=>fetch(url, opts)}; // remplaçable par les autotests
+const RELAY_POLL_MS = 120000;                          // quotas Apps Script : une vérification toutes les 2 minutes au plus
+class RelayConflict extends Error{}
+function isRelay(){ return !!(state.driveFile && state.driveFile.relay); }
+async function relayCall(action, data, relay){
+  const r = relay || (state.driveFile && state.driveFile.relay);
+  if(!r) throw new DriveError(0, 'Relais Seaway non configuré.');
+  let res;
+  try{
+    res = await RELAY_API.fetch(r.url, {method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body:JSON.stringify({...(data||{}), action, token:r.token})});
+  }catch(e){ throw new DriveError(0, 'Relais Seaway injoignable : vérifiez le réseau.'); }
+  if(!res.ok) throw new DriveError(res.status, 'Relais Seaway : erreur '+res.status+'.');
+  let j;
+  try{ j = await res.json(); }catch(e){ throw new DriveError(502, 'Relais Seaway : réponse illisible (adresse du relais correcte ?).'); }
+  if(j && j.error) throw new DriveError(j.code===401 ? 403 : (j.code||403), j.code===401 ? 'Lien d’invitation invalide ou révoqué : demandez un nouveau lien à l’administrateur.' : 'Relais Seaway : '+j.error+'.');
+  return j;
+}
+/* « https://…/#/rejoindre?r=<relais>&t=<jeton> » (ou le texte collé qui le contient) */
+function parseInviteLink(text){
+  const m = /[#?&]r=([^&\s]+)&t=([a-f0-9]{20,64})/i.exec(String(text||''));
+  if(!m) return null;
+  let url = '';
+  try{ url = decodeURIComponent(m[1]); }catch(e){ return null; }
+  const u = parseHttpsUrl(url);
+  return u ? {url:u.href, token:m[2].toLowerCase()} : null;
+}
+function blobToBase64(blob){
+  return new Promise((resolve, reject)=>{ const fr = new FileReader(); fr.onload = ()=>resolve(String(fr.result).split(',')[1]||''); fr.onerror = ()=>reject(fr.error); fr.readAsDataURL(blob); });
+}
+function base64ToBlob(b64, type){ const bin = atob(b64||''); const a = new Uint8Array(bin.length); for(let i=0; i<bin.length; i++) a[i] = bin.charCodeAt(i); return new Blob([a], {type:type||'application/octet-stream'}); }
+
+/* rejoindre les données d'un relais avec un lien d'invitation */
+async function relayJoin(link){
+  if(!isOnline()){ toast('Connexion impossible hors ligne : ouvrez le lien avec du réseau.'); return false; }
+  const r = {url:link.url, token:link.token};
+  let info, remote, rev;
+  try{
+    info = await relayCall('ping', {}, r);
+    const got = await relayCall('get', {}, r);
+    remote = parseSnapshot(got.content); rev = got.rev;
+  }catch(e){ toast(e.message || 'Relais injoignable.'); return false; }
+  const fresh = !state.lastSyncAt && !state.dirty && !state.fileHandle && !state.fileName && !state.driveFile;
+  const how = fresh ? 'replace' : await choiceModal('Rejoindre l’équipe Seaway', 'Invitation'+(info.user.name ? ' de '+info.user.name : '')+' : que faire des données déjà présentes sur cet appareil ?', [
+    {value:'merge', primary:true, label:'Les fusionner avec celles de l’équipe', hint:'Recommandé : rien n’est perdu ; seuls les vrais conflits vous sont soumis.'},
+    {value:'replace', label:'Les remplacer par celles de l’équipe', hint:'Les données de cet appareil sont abandonnées.'}]);
+  if(!how) return false;
+  state.driveFile = {id:info.fileId, name:info.fileName||DATA_FILE_NAME, folderId:null, folderName:info.folderName||'Seaway GMAO', webViewLink:'', canEdit:info.canEdit!==false,
+    relay:{url:r.url, token:r.token, name:info.user.name||'', role:info.user.role||'', profileId:info.user.profileId||'', admin:!!info.user.admin}, _metaRev:rev};
+  state.driveUser = {name:info.user.name||'', email:''};
+  state.driveReadOnly = info.canEdit===false; state.driveNeedsAuth = false; state.driveError = null;
+  forgetHandle(); setDataFolder(null); state.fileHandle = null; state.resumeHandle = null; state.fileName = null;
+  if(how==='replace'){ applySnapshot(remote); state.dirty = false; }
+  else{
+    state.syncBase = null;
+    const res = await mergeWithRemote(remote, false, 'de l’équipe');
+    if(!res){ state.driveFile = null; state.driveUser = null; return false; }
+    applySnapshot(res.merged);
+    state.dirty = !sameValue(syncDataOf(res.merged), syncDataOf(remote));
+    state.changeSeq++;
+  }
+  state.syncBase = syncDataOf(remote);
+  state.driveRev = 'r'+rev;
+  state.fileRevision = Number(remote.revision)||0;
+  driveSaveConnection(); markSynced(remote.savedBy);
+  persistLocalCache();
+  render();
+  toast('Connecté aux données de l’équipe'+(info.user.name ? ' — bienvenue '+info.user.name : '')+(state.driveReadOnly ? ' (lecture seule)' : ''), 'success');
+  if(state.dirty && !state.driveReadOnly) driveSyncNow(false);
+  return true;
+}
+/* lien ouvert : …/#/rejoindre?r=…&t=… (au démarrage ou depuis l'application déjà ouverte) */
+async function relayJoinFromHash(hash){
+  const h = hash || String(location.hash);
+  if(!h.startsWith('#/rejoindre')) return;
+  const link = parseInviteLink(h);
+  if(String(location.hash).startsWith('#/rejoindre')){
+    try{ history.replaceState(null, '', location.pathname+location.search+'#/dashboard'); }catch(e){} // le jeton ne reste pas dans l'adresse
+    state.route = '#/dashboard';
+  }
+  if(!link){ toast('Lien d’invitation incomplet : demandez-en un nouveau.'); render(); return; }
+  if(isRelay() && state.driveFile.relay.token===link.token){ render(); toast('Déjà connecté avec ce lien'); return; }
+  await relayJoin(link);
+}
+function openJoinModal(){
+  const input = el('textarea',{name:'lien', class:'select', rows:'3', 'aria-label':'Lien d’invitation', 'data-fk':'lien-invitation', placeholder:'Collez ici le lien d’invitation reçu (https://…#/rejoindre?r=…&t=…)'});
+  openModal({title:'Rejoindre avec un lien d’invitation', submitLabel:'Rejoindre',
+    body:el('div',{}, el('div',{class:'hint', style:'margin-bottom:8px;'}, 'Le lien est envoyé par l’administrateur (Profils & accès › Lien d’invitation). Fonctionne aussi avec le fichier ouvert depuis OneDrive ou une clé USB.'), input),
+    validate: d=>parseInviteLink(d.lien) ? null : 'Ce texte ne contient pas de lien d’invitation Seaway.',
+    onSubmit: async d=>{ await relayJoin(parseInviteLink(d.lien)); }});
+}
+/* le profil créé par la personne connectée avec le relais est relié à son lien */
+async function relayBindProfile(profileId, name){
+  if(!isRelay()) return;
+  try{ await relayCall('bind', {profileId, name}); state.driveFile.relay.profileId = profileId; driveSaveConnection(); }catch(e){ console.warn(e); }
+}
+
+/* ---------- invitations : lien + QR code ---------- */
+const APP_PUBLIC_URL = 'https://baltio.github.io/seaway-gmao/';
+function appUrl(){ return IS_HOSTED ? location.href.split('#')[0] : APP_PUBLIC_URL; }
+/* QR code : bibliothèque chargée à la demande (en ligne) ; sinon, le lien seul */
+let qrLib = null;
+function loadQrLib(){
+  if(window.qrcode) return Promise.resolve(window.qrcode);
+  if(!qrLib) qrLib = new Promise((resolve, reject)=>{
+    const s = el('script',{src:'https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js', async:''});
+    s.onload = ()=>window.qrcode ? resolve(window.qrcode) : reject(new Error('QR'));
+    s.onerror = ()=>{ qrLib = null; reject(new Error('QR')); };
+    document.head.appendChild(s);
+  });
+  return qrLib;
+}
+function qrBox(text){
+  const box = el('div',{class:'qr-box', 'aria-label':'QR code du lien', role:'img'});
+  if(TEST_MODE){ box.textContent = 'QR'; return box; }
+  loadQrLib().then(q=>{ const qr = q(0, 'M'); qr.addData(text); qr.make(); box.innerHTML = qr.createSvgTag({cellSize:5, margin:2, scalable:true}); })
+    .catch(()=>{ box.appendChild(el('div',{class:'hint'}, 'QR code indisponible hors ligne : envoyez le lien.')); });
+  return box;
+}
+function shareButtons(link, text){
+  const msg = text+'\n'+link;
+  return el('div',{class:'invite-actions'},
+    el('button',{class:'btn btn-primary btn-sm', type:'button', 'data-fk':'copier-lien', onclick:async()=>{ try{ await navigator.clipboard.writeText(link); toast('Lien copié'); }catch(e){ toast('Copie impossible : sélectionnez le lien.'); } }}, 'Copier le lien'),
+    navigator.share ? el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>navigator.share({title:'Seaway GMAO', text, url:link}).catch(()=>{})}, 'Partager…') : null,
+    el('a',{class:'btn btn-ghost btn-sm', href:'https://wa.me/?text='+encodeURIComponent(msg), target:'_blank', rel:'noopener noreferrer'}, 'WhatsApp'),
+    el('a',{class:'btn btn-ghost btn-sm', href:'sms:?&body='+encodeURIComponent(msg)}, 'SMS'),
+    el('a',{class:'btn btn-ghost btn-sm', href:'mailto:?subject='+encodeURIComponent('Seaway GMAO')+'&body='+encodeURIComponent(msg)}, 'E-mail'));
+}
+function showLinkModal(title, link, intro, text){
+  openModal({title, infoOnly:true, body:el('div',{class:'invite-modal'},
+    el('div',{class:'hint', style:'margin:0 0 10px;'}, intro),
+    qrBox(link),
+    el('input',{type:'text', class:'select', readonly:'', value:link, 'aria-label':'Lien', 'data-fk':'lien-genere', onclick:e=>e.target.select(), style:'width:100%;margin:10px 0;'}),
+    shareButtons(link, text),
+    el('div',{class:'hint', style:'margin-top:10px;'}, 'Sur le téléphone : ouvrir le lien dans Chrome (Android) ou Safari (iPhone), puis « Installer l’application » / « Sur l’écran d’accueil ».'))});
+}
+/* lien de l'application seule (installation) */
+function openAppLinkModal(){
+  showLinkModal('Installer l’application', appUrl(), 'Lien de l’application, à ouvrir sur le téléphone ou la tablette. Pour l’accès aux données de l’équipe, envoyez plutôt un lien d’invitation personnel (Profils & accès).', 'Seaway GMAO — application de maintenance :');
+}
+/* lien d'invitation personnel (relais) */
+async function inviteProfile(u){
+  if(!isRelay() || !state.driveFile.relay.admin){ openAppLinkModal(); return; }
+  try{
+    const res = await relayCall('invite', {name:profileFullName(u), role:u.role||'equipage', profileId:u.id, readOnly:false});
+    logHistory('users', u.id, profileFullName(u), 'invitation créée', null, 'lien d’accès aux données (réf. '+res.ref+')');
+    showLinkModal('Lien d’invitation — '+profileFullName(u), res.link,
+      'Lien personnel de '+profileFullName(u)+' ('+roleDef(u.role).label+') : il donne accès à l’application et aux données de l’équipe, sans compte Google. À envoyer à cette seule personne ; révocable dans « Liens actifs ».',
+      'Bonjour, voici ton accès à Seaway GMAO (à ouvrir sur ton téléphone) :');
+  }catch(e){ toast(e.message); }
+}
+async function openActiveLinksModal(){
+  let list;
+  try{ list = (await relayCall('list')).tokens; }catch(e){ toast(e.message); return; }
+  const box = el('div',{});
+  const draw = ()=>{
+    box.innerHTML = '';
+    if(!list.length) box.appendChild(el('div',{class:'hint'}, 'Aucun lien actif.'));
+    list.forEach(t=>{
+      const p = t.profileId && state.users.find(u=>u.id===t.profileId);
+      box.appendChild(el('div',{class:'settings-row'},
+        el('div',{}, el('div',{class:'lbl'}, (p ? profileFullName(p) : t.name || 'Sans nom')+(t.self ? ' (vous)' : '')),
+          el('div',{class:'desc'}, [t.admin ? 'Lien administrateur' : roleDef(p ? p.role : t.role).label, t.readOnly ? 'lecture seule' : '', t.created ? 'créé le '+fmtDateTime(t.created) : '', 'réf. '+t.ref].filter(Boolean).join(' · '))),
+        t.admin ? el('span',{class:'hint', style:'margin:0;'}, 'se change dans le script') :
+          el('button',{class:'btn-danger-text', type:'button', 'data-fk':'revoquer-'+t.ref, onclick:()=>confirmModal('Révoquer le lien de '+(p ? profileFullName(p) : t.name || 'cette personne')+' ? L’application de cette personne ne pourra plus lire ni envoyer de données.', async()=>{
+            await relayCall('revoke', {ref:t.ref});
+            logHistory('users', t.profileId||null, p ? profileFullName(p) : t.name || 'lien', 'invitation révoquée', null, 'réf. '+t.ref);
+            list = list.filter(x=>x!==t); draw(); toast('Lien révoqué');
+          })}, 'Révoquer')));
+    });
+  };
+  draw();
+  openModal({title:'Liens d’invitation actifs', infoOnly:true, wide:true, body:box});
+}
+
 function driveClientId(){ return (state.appConfig && state.appConfig.googleClientId) || prefStore.getItem('sw_google_client_id') || ''; }
 function driveAvailable(){ return (IS_HOSTED || TEST_MODE) && !!driveClientId(); }
 class DriveError extends Error{ constructor(status, message){ super(message); this.status = status; } }
@@ -2433,6 +2625,7 @@ function loadGoogleIdentity(){
 }
 /* jeton d'accès ; interactive=false : n'ouvre jamais de fenêtre (synchro auto) */
 async function driveGetToken(interactive){
+  if(isRelay()) return 'relais'; // le relais n'utilise pas la connexion Google de l'appareil
   if(state.driveToken && Date.now() < state.driveTokenExp - 60000) return state.driveToken;
   if(!interactive){ state.driveNeedsAuth = true; renderFileAlerts(); renderFileStatus(); throw new DriveError(401, 'Connexion Google à renouveler.'); }
   await loadGoogleIdentity();
@@ -2475,10 +2668,14 @@ async function driveReq(method, url, opts){
 }
 const driveQ = s=>encodeURIComponent(s);
 function driveMeta(id){
+  if(isRelay()) return relayCall('meta').then(j=>{ state.driveFile._metaRev = j.rev; return {id, headRevisionId:'r'+j.rev, capabilities:{canEdit: state.driveFile.canEdit!==false}}; });
   return driveReq('GET', DRIVE_URL+'/files/'+id+'?supportsAllDrives=true&fields='+driveQ('id,name,headRevisionId,modifiedTime,parents,webViewLink,capabilities(canEdit),lastModifyingUser(displayName)'));
 }
-function driveDownload(id){ return driveReq('GET', DRIVE_URL+'/files/'+id+'?alt=media&supportsAllDrives=true', {as:'text'}); }
+function driveDownload(id){ if(isRelay()) return relayCall('get').then(j=>{ state.driveFile._metaRev = j.rev; return j.content; }); return driveReq('GET', DRIVE_URL+'/files/'+id+'?alt=media&supportsAllDrives=true', {as:'text'}); }
 function driveUpdate(id, text){
+  if(isRelay()) return relayCall('put', {expectedRev:state.driveFile._metaRev, content:text}).then(j=>{
+    if(j.conflict){ state.driveFile._metaRev = j.rev; throw new RelayConflict('modifié entre-temps'); }
+    state.driveFile._lastRev = 'r'+j.rev; return {id, headRevisionId:'r'+j.rev}; });
   return driveReq('PATCH', DRIVE_UPLOAD+'/files/'+id+'?uploadType=media&supportsAllDrives=true&fields='+driveQ('id,headRevisionId,modifiedTime'),
     {body:text, headers:{'Content-Type':'application/json; charset=UTF-8'}});
 }
@@ -2493,6 +2690,7 @@ function driveCreateFolder(name, parentId){
     {body:JSON.stringify({name, mimeType:DRIVE_FOLDER_MIME, parents: parentId ? [parentId] : undefined}), headers:{'Content-Type':'application/json'}});
 }
 async function driveRevisionIds(id){
+  if(isRelay()) return ['r'+state.driveFile._metaRev, state.driveFile._lastRev]; // le relais refuse toute écriture concurrente
   const r = await driveReq('GET', DRIVE_URL+'/files/'+id+'/revisions?pageSize=1000&fields='+driveQ('revisions(id)'));
   return (r.revisions||[]).map(x=>x.id);
 }
@@ -2649,7 +2847,9 @@ async function driveDoSync(auto){
       await driveExternalizeAttachments(f);
       const payload = snapshotData();
       payload.revision = lastRev + 1;
-      const written = await driveUpdate(f.id, JSON.stringify(payload, null, 1));
+      let written;
+      try{ written = await driveUpdate(f.id, JSON.stringify(payload, null, 1)); }
+      catch(e){ if(e instanceof RelayConflict) continue; throw e; } // un collègue a écrit entre-temps : on refusionne
       // contrôle : la version juste avant la nôtre doit être celle sur laquelle on s'est basé
       const revs = await driveRevisionIds(f.id);
       const i = revs.indexOf(written.headRevisionId);
@@ -2696,6 +2896,15 @@ async function driveAttachmentFolder(f){
 async function driveExternalizeAttachments(f){
   const pending = allAttachments().filter(a=>a.dataUrl && !a.path);
   if(!pending.length) return 0;
+  if(f.relay){
+    for(const a of pending){
+      const blob = dataUrlToBlob(a.dataUrl);
+      const res = await relayCall('putAtt', {name:attachmentFileName(a), mime:a.contentType||blob.type||'application/octet-stream', data:await blobToBase64(blob)});
+      await blobCachePut('gdrive:'+res.id, blob);
+      a.path = 'gdrive:'+res.id; a.size = blob.size; delete a.dataUrl;
+    }
+    return pending.length;
+  }
   const folderId = await driveAttachmentFolder(f);
   for(const a of pending){
     const blob = dataUrlToBlob(a.dataUrl);
@@ -2712,6 +2921,7 @@ async function driveReadAttachment(path){
   const cached = await blobCacheGet(path);
   if(cached) return cached;
   if(!isOnline()) throw new DataFileError('Pièce jointe non disponible hors ligne (jamais consultée sur cet appareil).');
+  if(isRelay()){ const j = await relayCall('getAtt', {id:path.slice(7)}); const b = base64ToBlob(j.data, j.mime); blobCachePut(path, b); return b; }
   const blob = await driveReq('GET', DRIVE_URL+'/files/'+path.slice(7)+'?alt=media&supportsAllDrives=true', {as:'blob', interactive:true});
   blobCachePut(path, blob);
   return blob;
@@ -2823,6 +3033,10 @@ function userIsBusy(){
   return !!(a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName));
 }
 function checkForExternalChanges(){
+  if(isRelay()){ // quotas du relais : une vérification toutes les 2 minutes au plus
+    if(Date.now() - (checkForExternalChanges.lastRelay||0) < RELAY_POLL_MS && !state.dirty) return saveChain;
+    checkForExternalChanges.lastRelay = Date.now();
+  }
   if(state.driveFile) return driveSyncNow(true);
   if(!state.fileHandle || state.fileConflict || state.fileError) return saveChain;
   return saveDataFile(true);
@@ -3257,6 +3471,7 @@ function deleteDoc(collName, stateKey, id){
 
 /* ===================== ROUTER ===================== */
 window.addEventListener('hashchange', ()=>{
+  if(String(location.hash).startsWith('#/rejoindre')){ relayJoinFromHash(); return; }
   // quitter les autotests recharge la page pour retrouver les vraies données
   if(TEST_MODE && !location.hash.startsWith('#/autotest')){ location.reload(); return; }
   state.route = location.hash||'#/dashboard'; state.sidebarOpen=false; render();
@@ -6171,6 +6386,10 @@ function hasAdminProfile(){ return state.users.some(u=>u.role==='admin' && profi
 /* Google Drive : le compte connecté décide (pas de choix possible, sinon
    n'importe qui choisirait le profil administrateur) ; sinon, choix de l'appareil. */
 function currentProfile(){
+  if(typeof isRelay==='function' && isRelay()){
+    const pid = state.driveFile.relay.profileId;
+    return (pid && state.users.find(u=>u.id===pid && profileActive(u))) || null;
+  }
   const email = state.driveUser && state.driveUser.email ? state.driveUser.email.toLowerCase() : '';
   if(email) return state.users.find(u=>profileActive(u) && (u.email||'').trim().toLowerCase()===email) || null;
   const id = prefStore.getItem('sw_profile_id');
@@ -6179,7 +6398,10 @@ function currentProfile(){
 function currentRole(){
   if(!hasAdminProfile()) return 'admin';
   const p = currentProfile();
-  return p ? p.role : 'equipage';
+  if(p) return p.role;
+  // lien d'invitation sans profil relié : niveau donné par le lien
+  if(typeof isRelay==='function' && isRelay()) return state.driveFile.relay.admin ? 'admin' : (ROLES.some(r=>r.key===state.driveFile.relay.role) ? state.driveFile.relay.role : 'equipage');
+  return 'equipage';
 }
 /* nom inscrit dans l'historique et sur les fiches : celui du profil s'il est reconnu */
 function applyIdentity(){
@@ -6193,6 +6415,7 @@ function viewProfils(slot){
   applyIdentity();
   const me = currentProfile();
   const viaDrive = !!(state.driveUser && state.driveUser.email);
+  const viaRelay = isRelay();
   const meCard = el('div',{class:'card settings-card'}, el('h3',{},'Mon profil'));
   if(!hasAdminProfile()){
     meCard.appendChild(el('div',{class:'banner'}, 'Aucun administrateur n’est encore défini : tout le monde a l’accès complet. Créez d’abord votre propre profil avec le niveau « Administrateur »'
@@ -6201,9 +6424,9 @@ function viewProfils(slot){
   meCard.appendChild(el('div',{class:'settings-row'},
     el('div',{}, el('div',{class:'lbl', 'data-fk':'mon-profil'}, me ? profileFullName(me) : (state.me.name || 'Profil non reconnu')),
       el('div',{class:'desc'}, 'Niveau d’accès : '+roleDef(currentRole()).label+(me && me.fonction ? ' · '+me.fonction : '')
-        +(viaDrive ? ' · reconnu par le compte Google '+state.driveUser.email : ''))),
+        +(viaDrive ? ' · reconnu par le compte Google '+state.driveUser.email : '')+(viaRelay ? ' · reconnu par votre lien d’invitation' : ''))),
     me ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'modifier-mon-profil', onclick:()=>openProfileModal(me)}, 'Modifier mon profil') : el('span',{})));
-  if(!viaDrive && state.users.length){
+  if(!viaDrive && !viaRelay && state.users.length){
     const sel = el('select',{class:'select', 'aria-label':'Je suis', 'data-fk':'je-suis', onchange:e=>{
         if(e.target.value) prefStore.setItem('sw_profile_id', e.target.value); else prefStore.removeItem('sw_profile_id');
         applyIdentity(); render(); }},
@@ -6221,6 +6444,16 @@ function viewProfils(slot){
   const kindSwitch = el('div',{class:'segmented', role:'group', 'aria-label':'Type de personnel'},
     ...[['','Tous'], ...PROFILE_KINDS.map(k=>[k.v, k.l])].map(([k,l])=>el('button',{type:'button', class:'seg'+(kind===k?' active':''), 'aria-pressed':String(kind===k), 'data-fk':'prof-type-'+(k||'tous'),
       onclick:()=>{ state._profKind = k; renderContent(); }}, l+' ('+state.users.filter(u=>!k || (u.type||'navigant')===k).length+')')));
+  const relayAdmin = viaRelay && state.driveFile.relay.admin && canManageProfiles();
+  slot.appendChild(el('div',{class:'card settings-card', 'data-fk':'carte-invitations'}, el('h3',{},'Inviter'),
+    el('div',{class:'section-sub', style:'margin-bottom:10px;'}, relayAdmin
+      ? 'Chaque profil a son « Lien d’invitation » : la personne l’ouvre sur son téléphone, installe l’application et accède aux données — sans compte Google. Révocable à tout moment.'
+      : viaRelay ? 'Seul l’administrateur crée les liens d’invitation. Vous pouvez partager le lien de l’application pour l’installer.'
+      : 'Pour donner l’accès aux données par un simple lien (sans compte Google ni validation Google), installez le relais Seaway (relais/LISEZ-MOI.txt), puis ouvrez le lien administrateur.'),
+    el('div',{style:'display:flex;gap:8px;flex-wrap:wrap;'},
+      el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'lien-application', onclick:openAppLinkModal}, 'Lien et QR code de l’application'),
+      relayAdmin ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'liens-actifs', onclick:openActiveLinksModal}, 'Liens actifs…') : null,
+      el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'rejoindre-lien', onclick:openJoinModal}, 'Rejoindre avec un lien…'))));
   slot.appendChild(el('div',{class:'toolbar'}, kindSwitch,
     canManageProfiles() ? el('button',{class:'btn btn-accent', 'data-fk':'ajouter-profil', onclick:()=>openProfileModal(null, {type: kind || 'armement'})}, el('span',{html:iconPlus()}), 'Ajouter un profil') : el('span',{style:'display:none'})));
   const list = state.users.filter(u=>!kind || (u.type||'navigant')===kind)
@@ -6234,9 +6467,10 @@ function viewProfils(slot){
       el('td',{}, (PROFILE_KINDS.find(k=>k.v===(u.type||'navigant'))||PROFILE_KINDS[0]).l),
       el('td',{html:'<span class="badge '+({admin:'retard', technique:'proche', capitaine:'ok'}[u.role]||'inconnu')+'">'+esc(roleDef(u.role).label)+'</span>'+(profileActive(u) ? '' : ' <span class="badge inconnu">Désactivé</span>')}),
       el('td',{}, u.email ? el('a',{href:'mailto:'+u.email, onclick:e=>e.stopPropagation()}, u.email) : '—'),
-      el('td',{}, u.telephone ? el('a',{href:'tel:'+u.telephone.replace(/\s+/g,''), onclick:e=>e.stopPropagation()}, u.telephone) : '—'))));
+      el('td',{}, u.telephone ? el('a',{href:'tel:'+u.telephone.replace(/\s+/g,''), onclick:e=>e.stopPropagation()}, u.telephone) : '—'),
+      el('td',{}, relayAdmin && profileActive(u) ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'inviter-'+u.id, onclick:e=>{ e.stopPropagation(); inviteProfile(u); }}, 'Lien d’invitation') : null))));
     slot.appendChild(el('div',{class:'card', style:'padding:16px 18px;'}, el('div',{class:'table-wrap'}, el('table',{},
-      el('thead',{}, el('tr',{}, el('th',{},'Nom'), el('th',{},'Type'), el('th',{},'Niveau d’accès'), el('th',{},'Adresse Gmail'), el('th',{},'Téléphone'))), tbody))));
+      el('thead',{}, el('tr',{}, el('th',{},'Nom'), el('th',{},'Type'), el('th',{},'Niveau d’accès'), el('th',{},'Adresse Gmail'), el('th',{},'Téléphone'), el('th',{}))), tbody))));
   }
   slot.appendChild(el('div',{class:'card settings-card'}, el('h3',{},'Niveaux d’accès'),
     ...ROLES.map(r=>el('div',{class:'settings-row'}, el('div',{}, el('div',{class:'lbl'}, r.label), el('div',{class:'desc'}, r.desc)))),
@@ -6303,6 +6537,7 @@ function openProfileModal(u, prefill){
         const id = addDoc('users','users', data);
         // premier administrateur créé sans Google : c'est la personne sur cet appareil
         if(wasBootstrap && data.role==='admin' && !(state.driveUser && state.driveUser.email)) prefStore.setItem('sw_profile_id', id);
+        if(isRelay() && !state.driveFile.relay.profileId && (wasBootstrap || state.driveFile.relay.admin) && data.role==='admin') relayBindProfile(id, profileFullName(data));
         logHistory('users', id, profileFullName(data), 'créé', data.vessel||null, roleDef(data.role).label);
       }
       applyIdentity();
@@ -9484,6 +9719,10 @@ async function driveArchiveFolder(f){
 /* archive partagée de la semaine (Drive ou dossier) ; renvoie où elle est, ou null */
 async function writeSharedArchive(week, text){
   const name = archiveFileName(week);
+  if(isRelay() && !state.driveReadOnly){
+    await relayCall('archive', {name, content:text});
+    return 'Google Drive (relais) › '+(state.driveFile.folderName||'Seaway GMAO')+' › '+ARCHIVE_DRIVE_FOLDER;
+  }
   if(state.driveFile && !state.driveReadOnly){
     await driveGetToken(false);
     const folder = await driveArchiveFolder(state.driveFile);
@@ -10198,11 +10437,13 @@ async function initApp(){
     const hadCache = await loadLocalCache();
     if(!hadCache) seedDemoData();
     driveRestoreConnection();
-    if(state.driveFile){ if(isOnline()) state.driveNeedsAuth = true; } // connexion Google à renouveler d'un clic
+    if(state.driveFile && state.driveFile.relay) setTimeout(()=>driveSyncNow(true), 800); // relais : pas de connexion Google à renouveler
+    else if(state.driveFile){ if(isOnline()) state.driveNeedsAuth = true; } // connexion Google à renouveler d'un clic
     else await restoreFileConnection();
   }
   render();
   hideSplash();
+  if(!TEST_MODE) relayJoinFromHash(); // ouverture par un lien d'invitation
   maybeNotifyOnOpen();
   setTimeout(()=>maybeWeeklyArchive(), 5000);
   setInterval(()=>maybeWeeklyArchive(), 3600*1000);
@@ -12550,6 +12791,137 @@ autotest('Interface', 'couleur du navire sélectionné : fond, bandeau, fenêtre
   expect.ok($('.modal .modal-vessel-warn').textContent.includes('alors que l’écran affiche le Viga'), 'autre navire que l’écran : alerte');
   expect.equal(new Set(Object.values(VESSEL_COLORS)).size, ALL_VESSELS.length, 'une couleur différente par navire');
   closeAllModals(); state.route = '#/autotest'; renderContent();
+});
+
+/* ===================== Relais Google Drive (lien d'invitation) ===================== */
+/* faux relais en mémoire : mêmes actions et mêmes règles que relais/Code.gs */
+function useFakeRelay(){
+  let n = 0;
+  const tok = ()=>(++n).toString(16).padStart(32, 'c');
+  const srv = {url:'https://script.google.com/macros/s/TEST/exec', rev:0, calls:[], tokens:{}, files:{}, archives:{},
+    content:JSON.stringify({app:'seaway-gmao', version:1, revision:0, savedAt:'2026-10-01T00:00:00.000Z', savedBy:'Relais'})};
+  srv.admin = tok(); srv.tokens[srv.admin] = {name:'Administrateur', role:'admin', admin:true};
+  srv.link = t=>APP_PUBLIC_URL+'#/rejoindre?r='+encodeURIComponent(srv.url)+'&t='+t;
+  srv.edit = (by, mutate)=>{ const o = JSON.parse(srv.content); o.savedBy = by; mutate(o); srv.content = JSON.stringify(o); srv.rev++; };
+  patch(RELAY_API, 'fetch', async (url, opts)=>{
+    const ok = o=>({ok:true, status:200, json:async()=>o});
+    if(url!==srv.url) return {ok:false, status:404, json:async()=>({})};
+    const q = JSON.parse(opts.body), info = srv.tokens[q.token];
+    srv.calls.push(q.action);
+    if(!info) return ok({error:'lien invalide', code:401});
+    const admin = !!info.admin || info.role==='admin';
+    switch(q.action){
+      case 'ping': return ok({ok:true, rev:srv.rev, fileId:'data1', fileName:'seaway-gmao-data.json', folderName:'Seaway GMAO', canEdit:!info.readOnly,
+        user:{name:info.name, role:info.role, profileId:info.profileId||'', admin}});
+      case 'meta': return ok({rev:srv.rev});
+      case 'get': return ok({rev:srv.rev, content:srv.content});
+      case 'put': if(String(q.expectedRev)!==String(srv.rev)) return ok({conflict:true, rev:srv.rev}); srv.content = q.content; srv.rev++; return ok({ok:true, rev:srv.rev});
+      case 'putAtt': { const id = 'fakeAttachmentId'+Object.keys(srv.files).length; srv.files[id] = {mime:q.mime, data:q.data}; return ok({id}); }
+      case 'getAtt': return srv.files[q.id] ? ok(srv.files[q.id]) : ok({error:'fichier hors du dossier', code:403});
+      case 'archive': srv.archives[q.name] = srv.archives[q.name] || q.content; return ok({ok:true});
+      case 'bind': info.profileId = q.profileId; return ok({ok:true});
+      case 'invite': { if(!admin) return ok({error:'réservé à l’administrateur', code:403}); const t = tok();
+        srv.tokens[t] = {name:q.name, role:q.role, profileId:q.profileId, created:'2026-10-23T10:00:00.000Z'}; return ok({token:t, ref:t.slice(0,8), link:srv.link(t)}); }
+      case 'list': return ok({tokens:Object.entries(srv.tokens).map(([t,o])=>({ref:t.slice(0,8), name:o.name, role:o.role, profileId:o.profileId||'', admin:!!o.admin, self:t===q.token}))});
+      case 'revoke': Object.keys(srv.tokens).forEach(t=>{ if(t.startsWith(q.ref) && !srv.tokens[t].admin) delete srv.tokens[t]; }); return ok({ok:true});
+    }
+    return ok({error:'action inconnue', code:400});
+  });
+  return srv;
+}
+autotest('Relais', 'lien d’invitation reconnu (adresse du relais et jeton), y compris collé dans un message', ()=>{
+  const l = parseInviteLink('Bonjour, voici ton accès : https://baltio.github.io/seaway-gmao/#/rejoindre?r=https%3A%2F%2Fscript.google.com%2Fmacros%2Fs%2FABC%2Fexec&t=0123456789abcdef0123456789abcdef merci');
+  expect.ok(l && l.url==='https://script.google.com/macros/s/ABC/exec' && l.token==='0123456789abcdef0123456789abcdef');
+  expect.equal(parseInviteLink('https://baltio.github.io/seaway-gmao/'), null);
+  expect.equal(parseInviteLink('#/rejoindre?r=http%3A%2F%2Fexemple.fr&t=0123456789abcdef0123456789abcdef'), null, 'relais en https seulement');
+});
+autotest('Relais', 'ouvrir le lien administrateur : données de l’équipe, administrateur, jeton retiré de l’adresse, profil relié', async ()=>{
+  const srv = useFakeRelay();
+  srv.edit('Marie', o=>{ o.jobs = [{id:'j1', vessel:'viga', titre:'Job de l’équipe'}]; });
+  await relayJoinFromHash('#'+srv.link(srv.admin).split('#')[1]); await tick(20);
+  expect.ok(isRelay() && state.jobs.some(j=>j.titre==='Job de l’équipe'), 'données de l’équipe chargées');
+  expect.equal(currentRole(), 'admin');
+  expect.ok(dataLocationInfo().title.includes('lien d’invitation'));
+  openProfileModal(null, {type:'armement'});
+  fillModal({nom:'Jugault', prenom:'Loïc', role:'admin'});
+  confirmTopModal(); await tick(30);
+  const me = state.users.find(u=>u.nom==='Jugault');
+  expect.equal(srv.tokens[srv.admin].profileId, me.id, 'lien administrateur relié à son profil');
+  expect.equal(currentProfile().id, me.id);
+});
+autotest('Relais', 'invitation par lien depuis Profils & accès : niveau du profil, QR et partage, révocation', async ()=>{
+  const srv = useFakeRelay();
+  await relayJoin({url:srv.url, token:srv.admin});
+  const adm = addDoc('users','users',{nom:'Admin', role:'admin'}); state.driveFile.relay.profileId = adm;
+  const cap = addDoc('users','users',{nom:'Le Goff', prenom:'Jean', role:'capitaine'});
+  render(); state.route = '#/profils'; renderContent();
+  $('#content-slot [data-fk="inviter-'+cap+'"]').click(); await tick(30);
+  const link = $('.modal [data-fk=lien-genere]').value;
+  expect.ok(link.startsWith('https://baltio.github.io/seaway-gmao/#/rejoindre?r=') && $('.modal .qr-box') && $('.modal [data-fk=copier-lien]'), 'lien, QR code, partage');
+  const t = parseInviteLink(link).token;
+  expect.ok(srv.tokens[t].role==='capitaine' && srv.tokens[t].profileId===cap);
+  closeAllModals();
+  clearTimeout(saveTimer); await driveSyncNow(false); await tick(20); // profils envoyés à l'équipe
+  // sur le téléphone de Jean : le lien suffit
+  DATA_KEYS.forEach(k=>{ state[k] = []; }); Object.assign(state, {driveFile:null, driveUser:null, lastSyncAt:null, dirty:false, syncBase:null});
+  await relayJoin(parseInviteLink(link)); await tick(20);
+  expect.ok(isRelay() && currentProfile() && currentProfile().id===cap && currentRole()==='capitaine', 'Jean reconnu par son lien');
+  // l'administrateur révoque le lien
+  Object.assign(state.driveFile.relay, {token:srv.admin, admin:true, profileId:adm});
+  render(); state.route = '#/profils'; renderContent();
+  $('#content-slot [data-fk=liens-actifs]').click(); await tick(30);
+  $('.modal [data-fk="revoquer-'+t.slice(0,8)+'"]').click(); confirmTopModal(); await tick(30);
+  expect.ok(!srv.tokens[t], 'lien révoqué');
+  closeAllModals();
+  let err = null;
+  try{ await relayCall('meta', {}, {url:srv.url, token:t}); }catch(e){ err = e; }
+  expect.ok(err && err.message.includes('révoqué'), 'lien révoqué refusé : '+(err && err.message));
+  state.route = '#/autotest';
+});
+autotest('Relais', 'synchronisation : écriture refusée si un collègue a écrit entre-temps, refusion sans perte', async ()=>{
+  const srv = useFakeRelay();
+  await relayJoin({url:srv.url, token:srv.admin});
+  addDoc('jobs','jobs',{vessel:'men-du', titre:'Saisi ici'}); clearTimeout(saveTimer);
+  // un collègue envoie sa saisie juste avant nous
+  const realFetch = RELAY_API.fetch;
+  let once = true;
+  patch(RELAY_API, 'fetch', async (url, opts)=>{
+    const q = JSON.parse(opts.body);
+    if(q.action==='put' && once){ once = false; srv.edit('Marie', o=>{ o.jobs = (o.jobs||[]).concat([{id:'jm', vessel:'viga', titre:'Saisi par Marie'}]); }); }
+    return realFetch(url, opts);
+  });
+  await driveSyncNow(false); await tick(20);
+  const saved = JSON.parse(srv.content);
+  expect.ok(saved.jobs.some(j=>j.titre==='Saisi ici') && saved.jobs.some(j=>j.titre==='Saisi par Marie'), 'les deux saisies dans le fichier');
+  expect.ok(state.jobs.some(j=>j.titre==='Saisi par Marie'), 'et sur l’appareil');
+  expect.equal(srv.calls.filter(c=>c==='put').length, 2, 'première écriture refusée, deuxième acceptée');
+  expect.equal(state.dirty, false);
+});
+autotest('Relais', 'photos par le relais (envoi, lecture hors du cache), archive hebdomadaire, vérification toutes les 2 minutes', async ()=>{
+  const srv = useFakeRelay();
+  await relayJoin({url:srv.url, token:srv.admin});
+  addDoc('jobs','jobs',{vessel:'men-du', titre:'Avec photo', attachments:[{id:'ph1', name:'fuite.jpg', contentType:'image/jpeg', dataUrl:textDataUrl('PHOTO')}]}); clearTimeout(saveTimer);
+  await driveSyncNow(false); await tick(20);
+  const a = state.jobs[0].attachments[0];
+  expect.ok(a.path==='gdrive:fakeAttachmentId0' && !a.dataUrl && atob(srv.files.fakeAttachmentId0.data)==='PHOTO', 'photo rangée sur Drive par le relais');
+  patch(window, 'blobCacheGet', async ()=>null);
+  expect.equal(await (await readAttachmentFile(null, a.path)).text(), 'PHOTO', 'relue par le relais');
+  await maybeWeeklyArchive(true);
+  expect.ok(srv.archives[archiveFileName(archiveWeekKey())], 'archive dans le dossier « Archives »');
+  const n = srv.calls.length;
+  checkForExternalChanges.lastRelay = Date.now();
+  await checkForExternalChanges();
+  expect.equal(srv.calls.length, n, 'pas de nouvelle requête avant 2 minutes');
+});
+autotest('Relais', 'proposé dans « Emplacement », même sans Google Drive configuré (fichier ouvert en local)', async ()=>{
+  openLocationModal(); await tick(10);
+  const labels = $$('.modal .choice-btn strong').map(x=>x.textContent);
+  expect.equal(labels[0], 'Rejoindre avec un lien d’invitation');
+  closeAllModals();
+  openJoinModal();
+  fillModal({lien:'pas un lien'}); confirmTopModal();
+  expect.ok($('.modal [role=alert]').textContent.includes('ne contient pas'));
+  closeAllModals();
 });
 
 /* ===================== Annuler une action ===================== */
