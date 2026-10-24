@@ -262,6 +262,31 @@ tr.ord-annule>td{color:var(--text-soft);}
 .company-tabs>.tabs+.tabs{flex:0 0 auto;padding-left:6px;}
 .tab.tab-company.active{border-color:var(--navy-500);}
 .nc-jobs .settings-row{padding:6px 0;}
+/* recherche globale */
+.top-search{position:relative;z-index:2;display:inline-flex;align-items:center;gap:8px;margin-left:auto;padding:6px 12px;border-radius:20px;border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.08);color:#fff;font:inherit;font-size:13px;cursor:pointer;}
+.top-search:hover{background:rgba(255,255,255,.16);}
+.top-search kbd{font:600 10.5px system-ui, sans-serif;opacity:.7;border:1px solid rgba(255,255,255,.3);border-radius:4px;padding:1px 5px;}
+@media (max-width:700px){ .top-search-label, .top-search kbd{display:none;} }
+.low-stock{padding:12px 16px;margin-bottom:12px;border-left:4px solid var(--warning);}
+.low-stock-head{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px;}
+.search-global-input{width:100%;font-size:16px;padding:10px 12px;margin-bottom:10px;}
+.search-results{max-height:60vh;overflow:auto;display:flex;flex-direction:column;gap:2px;}
+.search-group{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-soft);margin:10px 0 2px;}
+.search-hit{display:flex;flex-direction:column;align-items:flex-start;gap:1px;text-align:left;padding:7px 10px;border-radius:8px;border:1px solid transparent;background:none;color:var(--text);font:inherit;cursor:pointer;}
+.search-hit:hover,.search-hit.active{background:var(--linen-100);border-color:var(--border);}
+.search-title{font-weight:600;}
+.search-sub{font-size:12px;color:var(--text-soft);}
+/* hors ligne / saisies en attente */
+.net-pill{position:relative;z-index:2;display:inline-flex;align-items:center;gap:7px;padding:5px 12px;border-radius:20px;border:0;font:inherit;font-size:12.5px;cursor:pointer;}
+.net-pill[hidden]{display:none;}
+.net-pill.net-off{background:#B3261E;color:#fff;}
+.net-pill.net-wait{background:#FBEEDD;color:#8F4F0C;}
+.net-dot{width:8px;height:8px;border-radius:50%;background:currentColor;}
+.net-label{font-weight:700;}
+.net-detail{opacity:.85;}
+@media (max-width:900px){ .net-detail{display:none;} }
+html.is-offline .topbar{box-shadow:inset 0 -3px 0 #B3261E;}
+
 /* menu regroupé : nombre de pages du groupe, onglets du groupe en tête de page */
 .nav-count{margin-left:auto;font-size:10.5px;font-weight:700;opacity:.55;background:rgba(255,255,255,.08);border-radius:10px;padding:1px 7px;}
 .subnav{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 16px;padding:0 0 12px;border-bottom:1px solid var(--border);}
@@ -299,6 +324,10 @@ tr.ord-annule>td{color:var(--text-soft);}
 .pj-route{font-size:11px;color:var(--link-text);margin-top:2px;}
 .pj-trip{font-size:11px;font-weight:600;margin-top:3px;line-height:1.3;}
 .pj-trip span{display:block;}
+.pj-ops.pj-dock-day{background:repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--warning) 14%, transparent) 6px 12px);}
+.pj-ops.pj-dock-conflict .pj-opsbtn{outline:2px solid var(--danger);outline-offset:-2px;}
+.apply-days{display:flex;gap:12px;flex-wrap:wrap;}
+
 .pj-trip span+span{font-weight:500;}
 .trips-box{display:flex;flex-direction:column;gap:8px;align-items:flex-start;}
 .trip-row{display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius);width:100%;box-sizing:border-box;}
@@ -3200,6 +3229,7 @@ function setFileError(kind, message){
 function renderFileStatus(){
   const box = $('#file-status-slot');
   if(box) box.innerHTML = fileStatusHTML();
+  if(typeof renderNetPill==='function') renderNetPill();
 }
 /* Alertes persistantes liées au fichier (restent affichées tant que le problème
    n'est pas réglé, contrairement aux toasts). */
@@ -3469,13 +3499,25 @@ function taskStatus(t){
   }
   return dateStatus(t.nextDate);
 }
+/* maintenance prévisionnelle : date estimée d'une échéance au compteur, d'après
+   l'utilisation moyenne du moteur (90 derniers jours, sinon 30) */
+function taskEstimatedDate(t){
+  if(!(t.unit==='heures' && t.cycleHours) || t.hoursAtLast==null || t.hoursAtLast==='') return null;
+  const m = t.meter||'mp1', cur = vesselMeter(t.vessel, m);
+  if(cur==null) return null;
+  const avg = meterDailyAverage(t.vessel, m, 90) || meterDailyAverage(t.vessel, m, 30);
+  if(!(avg>0.05)) return null; // moteur quasi arrêté : pas d'estimation
+  const remaining = Number(t.hoursAtLast)+Number(t.cycleHours)-cur;
+  return remaining<=0 ? todayISO() : addDays(todayISO(), Math.min(3650, Math.round(remaining/avg)));
+}
 /* échéance lisible d'un job récurrent (date, ou heures restantes au compteur) */
 function taskDueText(t){
   if(t.unit==='heures' && t.cycleHours){
     const meter = vesselMeter(t.vessel, t.meter||'mp1');
     if(t.hoursAtLast==null || t.hoursAtLast==='') return meterLabel(t.meter)+' : à renseigner';
     const due = Number(t.hoursAtLast)+Number(t.cycleHours);
-    return meterLabel(t.meter)+' à '+fmtHours(due) + (meter!=null ? ' (reste '+fmtHours(due-meter)+')' : '');
+    const est = taskEstimatedDate(t);
+    return meterLabel(t.meter)+' à '+fmtHours(due) + (meter!=null ? ' (reste '+fmtHours(due-meter)+')' : '') + (est && due-meter>0 ? ' · vers le '+fmtDate(est) : '');
   }
   return fmtDate(t.nextDate);
 }
@@ -3858,6 +3900,9 @@ function shell(){
     el('button',{class:'menu-btn', type:'button', 'aria-label':'Ouvrir le menu', 'aria-expanded':String(state.sidebarOpen), onclick:()=>{state.sidebarOpen=true; renderChrome(); const first = $('.sidebar .nav-item'); if(first) first.focus();}, html:iconMenu()}),
     el('div',{class:'page-title'}, el('h1',{style:'font-size:19px'}, pageTitle())),
     el('div',{id:'vessel-flag', class:'vessel-flag', role:'status', 'aria-live':'polite'}),
+    el('button',{id:'net-pill', class:'net-pill', type:'button', hidden:'', 'aria-live':'polite', 'aria-label':'État de la connexion et des saisies en attente', 'data-fk':'etat-reseau', onclick:()=>{ if(isOnline() && hasSharedLocation()) syncNow(); else openLocationModal(); }}),
+    el('button',{class:'top-search', type:'button', 'aria-label':'Rechercher dans tous les modules (Ctrl+K)', title:'Rechercher (Ctrl+K)', 'data-fk':'ouvrir-recherche', onclick:openGlobalSearch},
+      el('span',{html:iconSearch()}), el('span',{class:'top-search-label'}, 'Rechercher'), el('kbd',{}, 'Ctrl K')),
     seaBand()
   );
   main.appendChild(topbar);
@@ -3867,6 +3912,7 @@ function shell(){
 
   renderShellUser();
   renderFileAlerts();
+  renderNetPill();
 }
 function renderChrome(){
   $$('.sidebar').forEach(s=>s.classList.toggle('open', state.sidebarOpen));
@@ -4144,8 +4190,12 @@ function buildCalendarEvents(from, to){
       if(d < from){ const k = Math.floor(diffDays(d, from)/cycle); if(k>0) d = addDays(d, k*cycle); }
       for(let guard=0; d<=to && guard<400; guard++){ add({...base, date:d, kind:'projected', status:'prevu'}); d = addDays(d, cycle); }
     }
+    // job au compteur : échéance estimée d'après l'utilisation moyenne (prévisionnel)
+    const est = !t.nextDate && taskEstimatedDate(t);
+    if(est) add({...base, date:est, kind:'projected', status:taskStatus(t)==='retard' ? 'retard' : 'prevu', sub:base.sub+' · estimé au compteur '+meterLabel(t.meter)});
     const done = t.completions || [];
     done.forEach(c=>add({...base, date:c.date, kind:'done', status:'fait', note:c.commentaire||''}));
+
     if(t.lastDate && !done.some(c=>c.date===t.lastDate)) add({...base, date:t.lastDate, kind:'done', status:'fait'});
   });
   state.jobs.forEach(j=>{
@@ -5502,6 +5552,7 @@ function viewInventaire(slot){
         lift && lift!=='ok' ? el('span',{html:'<span class="badge '+lift+'">'+(lift==='retard' ? 'Vérification dépassée' : 'Vérification proche')+'</span> '}) : null,
         el('span',{html: low ? '<span class="badge retard">Seuil bas</span>' : '<span class="badge ok">OK</span>'}),
         canInput() ? el('button',{class:'btn btn-ghost btn-sm', style:'margin-left:6px;', 'aria-label':'Sortie de stock : '+r.designation, 'data-fk':'sortie-'+r.id, onclick:(e)=>{e.stopPropagation(); openStockMoveModal(r);}}, 'Sortie') : null,
+        canInput() && Number(r.quantite)>0 ? el('button',{class:'btn btn-ghost btn-sm', style:'margin-left:6px;', 'aria-label':'Transférer : '+r.designation, 'data-fk':'transfert-'+r.id, onclick:(e)=>{e.stopPropagation(); openStockTransferModal(r);}}, 'Transférer') : null,
         (low && canEdit()) ? el('button',{class:'btn btn-ghost btn-sm', style:'margin-left:6px;', 'aria-label':'Commander '+r.designation, onclick:(e)=>{e.stopPropagation(); openOrderModalFromLowStock(r);}}, 'Commander') : null
       )
     ));
@@ -5882,10 +5933,43 @@ function pickInventoryFile(){
 function stockMove(item, qty, motif, extra){
   const move = {id:uid(), date:(extra && extra.date) || todayISO(), at:new Date().toISOString(), by:state.me.name||null, qty, motif:motif||'', ...(extra||{})};
   const newQty = Math.round(((Number(item.quantite)||0) + qty)*1000)/1000;
+  const wasLow = inventoryIsLow(item);
   updateDoc('inventory','inventory', item.id, {quantite:newQty, mouvements:[move, ...(item.mouvements||[])]});
+  // passage sous le minimum : la commande est proposée dans « Commandes »
+  if(!wasLow && inventoryIsLow(item) && !openOrderQty([item.id])) setTimeout(()=>toast('Seuil bas : '+item.designation+' ('+newQty+' '+(item.unite||'')+') — à commander, voir Commandes'), 0);
   logHistory('inventory', item.id, item.designation, qty<0 ? 'sortie de stock' : 'entrée de stock', item.vessel||null,
     (qty>0 ? '+' : '')+qty+' '+(item.unite||'')+(motif ? ' · '+motif : '')+' · reste '+newQty);
   return move;
+}
+/* transfert de stock entre deux lieux (navire ↔ navire, à terre ↔ navire) : sortie d'un côté,
+   entrée de l'autre ; l'article est créé au lieu d'arrivée s'il n'y existe pas encore */
+function openStockTransferModal(item){
+  const from = invLoc(item);
+  const dests = invLocations().filter(l=>l.k!==from && l.k!=='site:'+NO_SITE);
+  const body = el('div',{},
+    el('div',{class:'hint', style:'margin-bottom:10px;'}, item.designation+' · '+invLocName(item)+' · en stock : '+(item.quantite ?? 0)+' '+(item.unite||'')),
+    field('Vers','dest','select', dests.map(l=>({v:l.k, l:l.l})), dests[0] ? dests[0].k : ''),
+    fieldRow(field('Quantité','qty','number', null, 1), field('Date','date','date', null, todayISO())),
+    field('Motif','motif','text', null, '', 'ex. réassort du bord, retour au chantier'));
+  openModal({title:'Transférer — '+item.designation, body, submitLabel:'Transférer', readOnly:!canInput(),
+    validate: d=>{ const q = Number(d.qty); if(!(q>0)) return 'Indiquez une quantité positive.'; if(q > (Number(item.quantite)||0)) return 'Quantité supérieure au stock ('+(item.quantite ?? 0)+').'; return d.dest ? null : 'Choisissez le lieu d’arrivée.'; },
+    onSubmit: async d=>{
+      const q = Number(d.qty), tid = uid();
+      const target = state.inventory.find(r=>invLoc(r)===d.dest && invGroupKey(r)===invGroupKey(item));
+      let dest = target;
+      if(!dest){
+        const loc = d.dest.startsWith('site:') ? {vessel:'', site:d.dest.slice(5)} : {vessel:d.dest};
+        const copy = {...loc, designation:item.designation, reference:item.reference||'', refFournisseur:item.refFournisseur||'', marque:item.marque||'', fournisseur:item.fournisseur||'',
+          nature:item.nature||'consommable', categorie:item.categorie||'', unite:item.unite||'', emplacement:'', quantite:0, seuilAlerte:null, equipmentId:null, notes:'Créé par transfert depuis '+invLocName(item), mouvements:[]};
+        const id = addDoc('inventory','inventory', copy);
+        logHistory('inventory', id, copy.designation, 'créé', copy.vessel||null, 'transfert depuis '+invLocName(item));
+        dest = state.inventory.find(r=>r.id===id);
+      }
+      const motif = d.motif.trim();
+      stockMove(item, -q, 'Transfert vers '+invLocName(dest)+(motif ? ' · '+motif : ''), {date:d.date, transfertId:tid});
+      stockMove(dest, q, 'Transfert depuis '+invLocName(item)+(motif ? ' · '+motif : ''), {date:d.date, transfertId:tid});
+      toast(q+' '+(item.unite||'')+' transféré(s) vers '+invLocName(dest), 'success');
+    }});
 }
 function openStockMoveModal(item, opts){
   const entree = !!(opts && opts.entree);
@@ -6055,10 +6139,13 @@ function viewCommandes(slot){
   stSel.value = state._ordStatus || '';
   slot.appendChild(el('div',{class:'toolbar'}, search, stSel,
     canEdit() ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'cde-import', onclick:pickOrdersFile}, 'Importer Excel…') : null,
+    el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'cde-bons', onclick:()=>openSupplierOrdersModal(owner)}, 'Bons par fournisseur…'),
     addButtonIfAllowed('Nouvelle commande', ()=>openOrderModal(null, {vessel:owner}))
   ));
   slot.appendChild(el('div',{class:'ord-legend', 'aria-label':'Couleurs des statuts'},
     ...ORDER_STATUSES.map(st=>el('span',{class:'ord-legend-item ord-'+ORDER_STATUS_KEY[st]}, el('i',{}), st+' ('+rows.filter(r=>(r.statut||'À commander')===st).length+')'))));
+  const low = lowStockToOrder(owner);
+  if(low.length) slot.appendChild(lowStockPanel(owner, low));
   let filtered = rows;
   if(state._ordStatus==='__encours') filtered = filtered.filter(orderIsOpen);
   else if(state._ordStatus) filtered = filtered.filter(r=>r.statut===state._ordStatus);
@@ -6094,7 +6181,68 @@ function viewCommandes(slot){
   slot.appendChild(card);
   slot.appendChild(fabIfAllowed(()=>openOrderModal(null, {vessel:owner})));
 }
+/* ---------- commandes automatiques : articles sous leur minimum ----------
+   Articles du navire (ou à terre pour la compagnie) dont le stock est au minimum ou
+   en dessous, sans commande en cours ; regroupés par fournisseur. Quantité proposée :
+   de quoi revenir à deux fois le minimum. */
+function lowStockToOrder(owner){ return state.inventory.filter(i=>(i.vessel||'')===owner && inventoryIsLow(i) && !openOrderQty([i.id])); }
+function suggestedOrderQty(i){ const min = Number(i.seuilAlerte)||0, q = Number(i.quantite)||0; return Math.max(1, Math.ceil(min*2 - q)); }
+function bySupplier(list, get){ const m = new Map(); list.forEach(x=>{ const k = String(get(x)||'').trim() || 'Sans fournisseur'; if(!m.has(k)) m.set(k, []); m.get(k).push(x); }); return [...m].sort((a,b)=>(a[0]==='Sans fournisseur')-(b[0]==='Sans fournisseur') || a[0].localeCompare(b[0],'fr')); }
+function lowStockPanel(owner, low){
+  const card = el('div',{class:'card low-stock', 'data-fk':'a-commander'},
+    el('div',{class:'low-stock-head'}, el('strong',{}, 'À commander : '+low.length+' article(s) sous le minimum'),
+      el('span',{class:'hint', style:'margin:0;'}, 'stock au minimum ou en dessous, sans commande en cours')));
+  bySupplier(low, i=>i.fournisseur).forEach(([sup, items])=>card.appendChild(el('div',{class:'settings-row'},
+    el('div',{}, el('div',{class:'lbl'}, sup), el('div',{class:'desc'}, items.map(i=>i.designation+' : '+(i.quantite ?? 0)+'/'+i.seuilAlerte+' → '+suggestedOrderQty(i)+' '+(i.unite||'')).join(' · '))),
+    canEdit() ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'creer-commandes-'+normText(sup).replace(/\W+/g,'-'), onclick:()=>withUndo('Commandes '+sup, ()=>{
+      items.forEach(i=>{
+        const id = addDoc('orders','orders', {vessel:owner, designation:i.designation, reference:i.reference||'', fournisseur:i.fournisseur||'', fournisseurEmail:'', quantite:suggestedOrderQty(i),
+          prixEstime:null, inventoryId:i.id, statut:'À commander', dateCommande:'', demandeur:state.me.name||'', destinataire:'', suiviPar:'', attachments:[], notes:'Stock '+(i.quantite ?? 0)+' pour un minimum de '+i.seuilAlerte});
+        logHistory('orders', id, i.designation, 'créée', owner||null, 'seuil bas ('+(i.quantite ?? 0)+'/'+i.seuilAlerte+')');
+      });
+      toast(items.length+' commande(s) créée(s) pour '+sup, 'success');
+    }).then(()=>renderContent())}, 'Créer les commandes ('+items.length+')') : null)));
+  return card;
+}
+/* bon de commande groupé : toutes les commandes « À commander » d'un fournisseur */
+function supplierOrders(owner){ return bySupplier(state.orders.filter(o=>(o.vessel||'')===owner && (o.statut||'À commander')==='À commander'), o=>o.fournisseur); }
+function printSupplierOrder(owner, sup, orders){
+  const sheet = el('div',{class:'print-sheet'}, el('section',{class:'ps-page'},
+    el('div',{class:'ps-head'}, el('img',{src:'data:image/png;base64,'+LOGO_B64, alt:'Seaway', class:'ps-logo'}),
+      el('div',{}, el('h1',{}, 'Bon de commande — '+sup), el('div',{class:'ps-sub'}, ownerName(owner)+' · édité le '+fmtDate(todayISO())+' · '+orders.length+' article(s)'))),
+    el('table',{class:'ps-table'}, el('thead',{}, el('tr',{}, ...['Article','Référence','Quantité','À livrer à','Précisions'].map(h=>el('th',{}, h)))),
+      el('tbody',{}, ...orders.map(o=>el('tr',{}, el('td',{}, o.designation), el('td',{}, o.reference||''), el('td',{class:'num'}, String(o.quantite ?? '')), el('td',{}, o.destinataire||ownerName(owner)), el('td',{}, o.notes||''))))),
+    el('div',{class:'ps-visa'}, el('div',{}, 'Demandé par : '+(state.me.name||'______________')), el('div',{}, 'Le : '+fmtDate(todayISO())), el('div',{}, 'Visa : ______________'))));
+  printSheet(sheet);
+}
+function supplierOrderMail(owner, sup, orders){
+  const to = (orders.find(o=>o.fournisseurEmail)||{}).fournisseurEmail || '';
+  const body = ['Bonjour,', '', 'Merci de nous faire parvenir :', ...orders.map(o=>'- '+o.designation+(o.reference ? ' (réf. '+o.reference+')' : '')+' : '+(o.quantite ?? '—')),
+    '', 'Livraison : '+ownerName(owner), '', 'Cordialement,', state.me.name||''].join('\n');
+  return 'mailto:'+encodeURIComponent(to)+'?subject='+encodeURIComponent('Commande Seaway — '+ownerName(owner))+'&body='+encodeURIComponent(body);
+}
+function openSupplierOrdersModal(owner){
+  const box = el('div',{});
+  const draw = ()=>{
+    box.innerHTML = '';
+    const groups = supplierOrders(owner);
+    if(!groups.length) box.appendChild(el('div',{class:'hint'}, 'Aucune commande « À commander » pour '+ownerName(owner)+'.'));
+    groups.forEach(([sup, orders])=>box.appendChild(el('div',{class:'settings-row', 'data-fk':'bon-'+normText(sup).replace(/\W+/g,'-')},
+      el('div',{}, el('div',{class:'lbl'}, sup+' ('+orders.length+')'), el('div',{class:'desc'}, orders.map(o=>o.designation+' × '+(o.quantite ?? '—')).join(' · '))),
+      el('div',{style:'display:flex;gap:6px;flex-wrap:wrap;'},
+        el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>printSupplierOrder(owner, sup, orders)}, el('span',{html:iconPrinter()}), 'Bon PDF'),
+        el('a',{class:'btn btn-ghost btn-sm', href:supplierOrderMail(owner, sup, orders)}, 'E-mail'),
+        canEdit() ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'marquer-commande', onclick:()=>withUndo('Commandé '+sup, ()=>{
+          orders.forEach(o=>{ updateDoc('orders','orders', o.id, {statut:'Commandé', dateCommande:o.dateCommande||todayISO()}); logHistory('orders', o.id, o.designation, 'modifiée', owner||null, 'Statut : À commander → Commandé (bon groupé '+sup+')'); });
+          toast(orders.length+' commande(s) passée(s) à « Commandé »');
+        }).then(()=>{ draw(); renderContent(); })}, 'Marquer « Commandé »') : null))));
+  };
+  draw();
+  openModal({title:'Bons par fournisseur — '+ownerName(owner), infoOnly:true, wide:true, body:el('div',{},
+    el('div',{class:'hint', style:'margin:0 0 10px;'}, 'Commandes « À commander » regroupées par fournisseur : un bon de commande (PDF ou e-mail) par fournisseur.'), box)});
+}
 function orderStatusBadge(s){
+
   return `<span class="badge ord-badge ord-${ORDER_STATUS_KEY[s]||'a-commander'}">${esc(s||'À commander')}</span>`;
 }
 function orderSummaryText(o){
@@ -6441,6 +6589,45 @@ function tripLogMiles(vessel, from, to){
   return total;
 }
 function fuelOwnerLabel(r){ return r.vessel ? vesselName(r.vessel) : COMPANY_LABEL+(r.site ? ' · '+siteName(r.site) : ''); }
+/* stock de la compagnie (achats moins transferts vers les navires), par produit et lieu, avec son prix moyen */
+function companyFuelStock(){
+  const m = new Map();
+  state.fuel.filter(r=>!r.vessel && !Array.isArray(r.lignes) && isLitres(r)).forEach(r=>{
+    const k = r.type+'|'+(r.site||'chantier');
+    const s = m.get(k) || {type:r.type, site:r.site||'chantier', litres:0, boughtL:0, cost:0};
+    const q = Number(r.quantite)||0; s.litres += q;
+    if(q>0 && r.transfert!=='out'){ const c = lineCost(q, r.prixLitre, r.prixTotal); if(c!=null){ s.boughtL += q; s.cost += c; } }
+    m.set(k, s);
+  });
+  return [...m.values()].map(s=>({...s, litres:Math.round(s.litres*100)/100, prixLitre: s.boughtL ? s.cost/s.boughtL : null}));
+}
+/* transfert du stock de la compagnie vers un navire : sortie (quantité négative, coût négatif)
+   côté compagnie, entrée côté navire au prix moyen du stock — le total de la compagnie ne change pas */
+function openFuelTransferModal(){
+  const stock = companyFuelStock().filter(s=>s.litres>0);
+  if(!stock.length){ toast('Aucun stock de la compagnie à transférer.'); return; }
+  const body = el('div',{},
+    field('Stock','src','select', stock.map((s, i)=>({v:String(i), l:s.type+' · '+siteName(s.site)+' : '+fmtNum(s.litres)+' L'+(s.prixLitre!=null ? ' ('+fmtNum(s.prixLitre, 3)+' €/L)' : '')})), '0'),
+    fieldRow(field('Vers le navire','vessel','select', VESSELS.map(v=>({v:v.key, l:v.name})), state.activeVessel), field('Date','date','date', null, todayISO())),
+    fieldRow(field('Quantité (L)','qty','number', null, ''), field('Caisse','caisse','select', [{v:'', l:'—'}, ...FUEL_TANKS.map(t=>({v:t.k, l:t.l}))], '')),
+    field('Notes','notes','text', null, ''));
+  openModal({title:'Transférer vers un navire', body, submitLabel:'Transférer', readOnly:!canInput(),
+    validate: d=>{ const s = stock[Number(d.src)], q = Number(d.qty); if(!(q>0)) return 'Indiquez une quantité positive.'; if(q > s.litres) return 'Quantité supérieure au stock ('+fmtNum(s.litres)+' L).';
+      const t = d.caisse && tankDef(d.caisse); if(t && t.type!==s.type) return 'Cette caisse n’est pas une caisse de '+s.type.toLowerCase()+'.'; return null; },
+    onSubmit: async d=>{
+      const s = stock[Number(d.src)], q = Number(d.qty), pl = s.prixLitre, tid = uid();
+      const cost = pl!=null ? round2(q*pl) : null;
+      const outId = addDoc('fuel','fuel', {vessel:'', site:s.site, date:d.date, type:s.type, quantite:-q, unite:'L', prixLitre:pl!=null ? round2(pl*1000)/1000 : null, prixTotal:cost!=null ? -cost : null,
+        transfert:'out', vers:d.vessel, transfertId:tid, notes:'Transfert vers '+vesselName(d.vessel)+(d.notes ? ' · '+d.notes : ''), attachments:[]});
+      const rec = {vessel:d.vessel, date:d.date, type:s.type, unite:'L', transfert:'in', depuis:s.site, transfertId:tid, notes:'Transfert depuis le stock '+siteName(s.site)+(d.notes ? ' · '+d.notes : ''), attachments:[]};
+      if(d.caisse) Object.assign(rec, {type:FUEL_SOUTAGE, lignes:[{caisse:d.caisse, quantite:q, prixLitre:pl!=null ? round2(pl*1000)/1000 : null, prixTotal:cost}], quantite:q, prixTotal:cost});
+      else Object.assign(rec, {quantite:q, prixLitre:pl!=null ? round2(pl*1000)/1000 : null, prixTotal:cost});
+      const inId = addDoc('fuel','fuel', rec);
+      logHistory('fuel', outId, 'Transfert '+s.type, 'ajouté', null, fmtNum(q)+' L de '+siteName(s.site)+' vers '+vesselName(d.vessel));
+      logHistory('fuel', inId, 'Transfert '+s.type, 'ajouté', d.vessel, fmtNum(q)+' L depuis '+siteName(s.site));
+      toast(fmtNum(q)+' L transférés vers '+vesselName(d.vessel), 'success');
+    }});
+}
 
 function viewCarburant(slot){
   slot.innerHTML='';
@@ -6454,7 +6641,17 @@ function viewCarburant(slot){
   slot.appendChild(el('div',{class:'toolbar', style:'justify-content:flex-end;'},
     el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'carburant-csv', onclick:()=>downloadFile('seaway-carburant-'+(owner||'compagnie')+'-'+todayISO()+'.csv', toCSV(rows, CSV_EXPORTS.find(x=>x.key==='fuel').cols))}, 'Exporter CSV'),
     !company && canInput() ? el('button',{class:'btn btn-primary', type:'button', 'data-fk':'nouveau-soutage', onclick:()=>openSoutageModal(null, {vessel:owner})}, el('span',{html:iconPlus()}), 'Nouveau soutage') : null,
+    company && canInput() ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'transfert-carburant', onclick:openFuelTransferModal}, 'Transférer vers un navire…') : null,
     canInput() ? el('button',{class:company ? 'btn btn-accent' : 'btn btn-ghost', type:'button', 'data-fk':'nouveau-releve', onclick:()=>openFuelModal(null, {vessel:owner})}, el('span',{html:iconPlus()}), company ? 'Nouvel achat' : 'Nouveau relevé') : null));
+  if(company){
+    const stock = companyFuelStock();
+    if(stock.length){
+      const tiles = el('div',{class:'grid-cards', style:'margin-bottom:14px;', 'data-fk':'stock-compagnie'});
+      stock.forEach(s=>tiles.appendChild(el('div',{class:'card stat-card'}, el('div',{class:'k'}, 'Stock '+s.type.toLowerCase()+' · '+siteName(s.site)), el('div',{class:'v conso-v'}, fmtNum(s.litres)+' L'),
+        el('div',{class:'stat-sub'}, s.prixLitre!=null ? 'prix moyen '+fmtNum(s.prixLitre, 3)+' €/L · valeur '+fmtEuros(round2(Math.max(0, s.litres)*s.prixLitre)) : 'achats sans prix'))));
+      slot.appendChild(tiles);
+    }
+  }
   if(!company){
     // chiffres clés du navire : dernier soutage, 12 derniers mois, trip log
     const last = rows.find(r=>r.type===FUEL_SOUTAGE);
@@ -6489,6 +6686,8 @@ function viewCarburant(slot){
     tbody.appendChild(el('tr',{class:'row-click', tabindex:'0', 'data-fk':'ligne-'+r.id, onclick:e=>{ if(e.target.closest('.row-actions')) return; soutage ? openSoutageModal(r) : openFuelModal(r); }},
       el('td',{style:'white-space:nowrap;'}, fmtDate(r.date)),
       el('td',{}, el('span',{class:'cat-tag'+(soutage ? ' fuel-soutage' : '')}, soutage ? 'Soutage' : r.type),
+        r.transfert ? el('div',{class:'hint', style:'margin:3px 0 0;font-weight:600;'}, r.transfert==='out' ? 'Transfert vers '+vesselName(r.vers) : 'Transfert depuis le stock '+siteName(r.depuis)) : null,
+
         soutage ? el('div',{class:'hint', style:'margin:3px 0 0;'}, r.lignes.filter(l=>Number(l.quantite)>0).map(l=>tankDef(l.caisse).l+' '+fmtNum(l.quantite)+' L').join(' · ')) : null,
         r.fournisseur ? el('div',{class:'hint', style:'margin:2px 0 0;'}, r.fournisseur) : null),
       el('td',{style:'white-space:nowrap;'}, soutage ? fmtNum(fuelRecordLitres(r))+' L' : `${r.quantite ?? '—'} ${r.unite||''}`),
@@ -7414,7 +7613,33 @@ function viewConsoBilan(slot){
     el('h2',{style:'font-size:15.5px;margin-bottom:4px;'}, 'Bilan — '+period.label),
     el('div',{class:'section-sub', style:'margin-bottom:8px;'}, 'Gasoil et huile reçus (soutages, appoints, achats). L/mille : gasoil reçu par les navires ÷ milles du trip log ; L/h : gasoil ÷ heures moteurs (voir « Par navire »).'),
     el('div',{class:'table-wrap'}, table)));
+  slot.appendChild(costPriceCard(period, owners));
 }
+/* coût de revient : carburant et huiles, commandes, arrêts techniques, par navire (et compagnie) */
+function costPriceFor(owner, from, to){
+  const fuel = consoBilanFor(owner, from, to).total;
+  const ords = state.orders.filter(o=>(o.vessel||'')===owner && o.statut!=='Annulé' && o.prixEstime!=null && o.prixEstime!=='' && ((o.dateCommande || o.dateReception || (o.createdAt||'').slice(0,10)) || '')>=from && ((o.dateCommande || o.dateReception || (o.createdAt||'').slice(0,10)) || '')<=to);
+  const orders = ords.reduce((s,o)=>s+(Number(o.prixEstime)||0), 0);
+  const docks = owner ? state.drydocks.filter(d=>d.vessel===owner && d.statut!=='Annulé' && d.debut && d.debut>=from && d.debut<=to).reduce((s,d)=>s+drydockTotals(d).cout, 0) : 0;
+  return {fuel, orders, docks, total:fuel+orders+docks, nOrders:ords.length};
+}
+function costPriceCard(period, owners){
+  const rows = owners.map(o=>({o, c:costPriceFor(o.k, period.from, period.to)}));
+  const T = ['fuel','orders','docks','total'].reduce((a,k)=>(a[k] = rows.reduce((s,r)=>s+r.c[k], 0), a), {});
+  const monthly = period.months.map(mb=>({mb, v:owners.reduce((s,o)=>s+costPriceFor(o.k, mb.from, mb.to).total, 0)}));
+  const n = v=>fmtNum(round2(v), 2);
+  return el('div',{class:'card', style:'padding:16px 18px;margin-top:14px;', 'data-fk':'cout-revient'},
+    el('h2',{style:'font-size:15.5px;margin-bottom:4px;'}, 'Coût de revient — '+period.label),
+    el('div',{class:'section-sub', style:'margin-bottom:8px;'}, 'Carburant et huiles (prix saisis), commandes (prix estimé, au mois de la commande), arrêts techniques (coût des travaux, au mois du début).'),
+    el('div',{class:'table-wrap'}, el('table',{class:'compact-table num-table'},
+      el('thead',{}, el('tr',{}, ...['Navire / compagnie','Carburant & huiles (€)','Commandes (€)','Arrêts techniques (€)','Total (€)'].map(h=>el('th',{}, h)))),
+      el('tbody',{}, ...rows.map(({o, c})=>el('tr',{}, el('td',{style:'font-weight:600;'}, o.l), el('td',{}, n(c.fuel)), el('td',{}, n(c.orders)+(c.nOrders ? ' ('+c.nOrders+')' : '')), el('td',{}, o.k ? n(c.docks) : '—'), el('td',{style:'font-weight:700;'}, n(c.total))))),
+      el('tfoot',{}, el('tr',{}, el('th',{}, 'Total'), el('th',{}, n(T.fuel)), el('th',{}, n(T.orders)), el('th',{}, n(T.docks)), el('th',{}, n(T.total)))))),
+    el('div',{class:'chart-grid', style:'margin-top:12px;'},
+      chartCard('Coût de revient par mois', 'euros · toute la compagnie', chartSVG({kind:'bar', unit:'€', ariaLabel:'Coût de revient par mois', data:monthly.map(m=>({label:m.mb.label, value:m.v||null, tip:m.mb.long+' : '+fmtEuros(round2(m.v))}))})),
+      chartCard('Coût de revient par navire', 'euros · '+period.label, chartSVG({kind:'bar', unit:'€', ariaLabel:'Coût de revient par navire', data:rows.map(({o, c})=>({label:o.k ? o.l : COMPANY_LABEL, value:c.total||null, tip:o.l+' : '+fmtEuros(round2(c.total))}))}))));
+}
+
 const BILAN_CSV_COLS = [
   {label:'Navire / compagnie', get:r=>r.o.l}, {label:'Gasoil (L)', get:r=>r.b.goL}, {label:'Gasoil (€)', get:r=>round2(r.b.goCost)},
   {label:'Prix moyen gasoil (€/L)', get:r=>r.b.goPrice!=null ? Math.round(r.b.goPrice*1000)/1000 : ''}, {label:'Huile (L)', get:r=>r.b.oilL}, {label:'Huile (€)', get:r=>round2(r.b.oilCost)},
@@ -7428,6 +7653,115 @@ const CONSO_CSV_COLS = [
   {label:'Gazole (L)', get:r=>r.c.gazole}, {label:'L/h (3 mois)', get:r=>r.rate3!=null ? Math.round(r.rate3*100)/100 : ''},
   {label:'Huile moteur (L)', get:r=>r.c.oilTotal},
 ];
+
+/* ===================== RECHERCHE GLOBALE (Ctrl+K) =====================
+   Une seule zone de recherche pour tous les modules : jobs, défauts, articles,
+   commandes, éléments, marins, profils, documents, certificats, arrêts, lignes,
+   et les pages du menu. Tous les mots tapés doivent se retrouver (accents et
+   majuscules ignorés). Le résultat ouvre la page du module puis la fiche. */
+const SEARCH_SOURCES = [
+  {key:'tasks', label:'Jobs récurrents', route:'#/entretien', text:r=>[r.task, r.category, r.observations, equipmentName(r.equipmentId)], title:r=>r.task, sub:r=>vesselName(r.vessel)+' · '+(r.category||'')+' · '+taskDueText(r), open:r=>openTaskModal(r)},
+  {key:'jobs', label:'Jobs ponctuels', route:'#/entretien', text:r=>[r.titre, r.description, r.assigneA, r.nature], title:r=>r.titre, sub:r=>vesselName(r.vessel)+' · '+(r.statut||'À faire'), open:r=>openJobModal(r)},
+  {key:'nonconformities', label:'Défaut/NC', route:'#/defauts', text:r=>[r.numero, r.titre, r.description, r.besoin, r.commentaires, r.responsable], title:r=>ncLabel(r), sub:r=>(r.vessel ? vesselName(r.vessel) : 'Flotte')+' · '+(r.statut||'Ouverte'), open:r=>openNcModal(r)},
+  {key:'inventory', label:'Inventaire', route:'#/inventaire', text:r=>[r.designation, r.reference, r.refFournisseur, r.marque, r.fournisseur, r.emplacement], title:r=>r.designation, sub:r=>invLocName(r)+' · '+(r.quantite ?? 0)+' '+(r.unite||'')+(r.reference ? ' · réf. '+r.reference : ''), open:r=>openInventoryModal(r)},
+  {key:'orders', label:'Commandes', route:'#/commandes', text:r=>[r.designation, r.reference, r.fournisseur, r.destinataire, r.notes], title:r=>r.designation, sub:r=>ownerName(r.vessel)+' · '+(r.statut||'À commander')+(r.fournisseur ? ' · '+r.fournisseur : ''), open:r=>openOrderModal(r)},
+  {key:'equipment', label:'Éléments du navire', route:'#/equipements', text:r=>[r.name, r.categorie, r.notes], title:r=>r.name, sub:r=>vesselName(r.vessel)+' · '+(r.categorie||''), open:r=>openEquipmentModal(r)},
+  {key:'crew', label:'Marins', route:'#/equipage', text:r=>[r.nom, r.prenom, r.poste], title:r=>crewFullName(r), sub:r=>r.poste||'Marin', open:r=>openCrewModal(r)},
+  {key:'users', label:'Profils', route:'#/profils', text:r=>[r.nom, r.prenom, r.fonction, r.email], title:r=>profileFullName(r), sub:r=>roleDef(r.role).label+(r.fonction ? ' · '+r.fonction : ''), open:r=>openProfileModal(r)},
+  {key:'documents', label:'Documentation', route:'#/documentation', text:r=>[r.titre, r.reference, r.type], title:r=>r.titre, sub:r=>docScopeLabel(r)+' · '+(r.type||''), open:r=>openDocumentModal(r)},
+  {key:'vesselCerts', label:'Certificats navire', route:'#/certificats-navire', text:r=>[r.nom, r.numero, r.organisme], title:r=>r.nom, sub:r=>vesselName(r.vessel)+(r.dateExpiration ? ' · expire le '+fmtDate(r.dateExpiration) : ''), open:r=>openVesselCertModal(r)},
+  {key:'drydocks', label:'Arrêts techniques', route:'#/arrets', text:r=>[r.titre, r.lieu, r.type, r.notes], title:r=>r.titre||'Arrêt technique', sub:r=>vesselName(r.vessel)+' · '+fmtDate(r.debut), open:r=>openDrydockModal(r)},
+  {key:'sheets', label:'Tableurs partagés', route:'#/tableurs', text:r=>[r.titre, r.categorie, r.notes], title:r=>r.titre, sub:r=>r.vessel ? vesselName(r.vessel) : 'Toute la flotte', open:r=>openSheetModal(r)},
+];
+function globalSearch(q, limit){
+  const words = normText(q).split(' ').filter(Boolean);
+  if(!words.length) return [];
+  const match = parts=>{ const t = normText(parts.filter(Boolean).join(' ')); return words.every(w=>t.includes(w)); };
+  const out = [];
+  visibleNav().forEach(n=>{ if(match([n.label, NAV_SUB_LABELS[n.route]])) out.push({group:'Pages', title:n.label, sub:'Aller à la page', route:n.route}); });
+  SEARCH_SOURCES.forEach(src=>{
+    let n = 0;
+    (state[src.key]||[]).forEach(r=>{
+      if(n>=(limit||6) || (r.vessel && !inVesselScope(r.vessel))) return;
+      if(match(src.text(r))){ out.push({group:src.label, title:src.title(r)||'(sans titre)', sub:src.sub(r), route:src.route, rec:r, src}); n++; }
+    });
+  });
+  mapRoutes().forEach(r=>{ if(match([routeLabel(r), r.name, vesselName(r.vessel)])) out.push({group:'Lignes', title:routeLabel(r), sub:vesselName(r.vessel), route:'#/carte', open:()=>openRouteModal(r)}); });
+  return out;
+}
+function openSearchResult(hit){
+  closeAllModalsQuiet();
+  if(hit.rec && hit.rec.vessel && VESSELS.some(v=>v.key===hit.rec.vessel)) state.activeVessel = hit.rec.vessel;
+  if(hit.src && hit.src.key==='inventory' && hit.rec && !hit.rec.vessel) state._invLoc = invLoc(hit.rec);
+  if(hit.src && hit.src.key==='orders') state._ordCompany = !hit.rec.vessel;
+  state.route = hit.route;
+  if(!TEST_MODE){ try{ history.pushState(null, '', hit.route); }catch(e){} } // sans événement hashchange : la fiche s'ouvre sur sa page
+  render();
+  if(hit.src) hit.src.open(hit.rec); else if(hit.open) hit.open();
+}
+function closeAllModalsQuiet(){ while(modalStack.length) modalStack[modalStack.length-1].close(); }
+function openGlobalSearch(){
+  if($('.modal [data-fk=recherche-globale]')){ $('.modal [data-fk=recherche-globale]').focus(); return; }
+  const input = el('input',{type:'search', class:'select search-global-input', 'data-fk':'recherche-globale', placeholder:'Rechercher : job, pièce, référence, défaut, commande, marin, document…', 'aria-label':'Recherche dans tous les modules', autocomplete:'off'});
+  const list = el('div',{class:'search-results', role:'listbox', 'aria-label':'Résultats'});
+  let hits = [], sel = 0;
+  const draw = ()=>{
+    list.innerHTML = '';
+    if(!input.value.trim()){ list.appendChild(el('div',{class:'hint'}, 'Tapez quelques lettres. Ctrl+K (ou ⌘K) ouvre cette recherche depuis n’importe quelle page ; ↑ ↓ puis Entrée pour ouvrir.')); return; }
+    if(!hits.length){ list.appendChild(el('div',{class:'hint'}, 'Aucun résultat.')); return; }
+    let group = '';
+    hits.forEach((h, i)=>{
+      if(h.group!==group){ group = h.group; list.appendChild(el('div',{class:'search-group'}, group)); }
+      list.appendChild(el('button',{type:'button', class:'search-hit'+(i===sel ? ' active' : ''), role:'option', 'aria-selected':String(i===sel), 'data-fk':'resultat-'+i, onclick:()=>openSearchResult(h)},
+        el('span',{class:'search-title'}, h.title), el('span',{class:'search-sub'}, h.sub||'')));
+    });
+  };
+  input.addEventListener('input', ()=>{ hits = globalSearch(input.value); sel = 0; draw(); });
+  input.addEventListener('keydown', e=>{
+    if(e.key==='ArrowDown' || e.key==='ArrowUp'){ e.preventDefault(); if(hits.length){ sel = (sel + (e.key==='ArrowDown' ? 1 : -1) + hits.length) % hits.length; draw(); const a = $('.search-hit.active', list); if(a) a.scrollIntoView({block:'nearest'}); } }
+    else if(e.key==='Enter'){ e.preventDefault(); if(hits[sel]) openSearchResult(hits[sel]); }
+  });
+  draw();
+  openModal({title:'Rechercher', infoOnly:true, wide:true, body:el('div',{class:'search-global'}, input, list)});
+  setTimeout(()=>input.focus(), 0);
+}
+document.addEventListener('keydown', e=>{
+  if((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase()==='k'){ e.preventDefault(); openGlobalSearch(); }
+});
+
+/* ===================== HORS LIGNE ET SAISIES EN ATTENTE =====================
+   Pastille dans la barre du haut : hors ligne, nombre de fiches modifiées sur cet
+   appareil pas encore envoyées à l'emplacement partagé, heure de la dernière synchro. */
+function pendingChangesCount(){
+  if(!state.dirty || !hasSharedLocation()) return 0;
+  const since = state.lastSyncAt || '';
+  let n = 0;
+  DATA_KEYS.forEach(k=>{ if(k==='history') return; (state[k]||[]).forEach(r=>{ const t = r.updatedAt || r.createdAt || ''; if(t && t>since) n++; }); });
+  return Math.max(n, 1);
+}
+function netStatus(){
+  const online = isOnline(), pending = pendingChangesCount();
+  const last = state.lastSyncAt ? new Date(state.lastSyncAt) : null;
+  const lastTxt = last ? 'dernière synchro '+(localISO(last)===todayISO() ? 'à '+last.toTimeString().slice(0,5) : 'le '+fmtDate(localISO(last))) : 'jamais synchronisé';
+  if(!online) return {level:'off', label:'Hors ligne', detail:(pending ? pending+' fiche(s) en attente d’envoi · ' : '')+lastTxt, pending};
+  if(pending) return {level:'wait', label:pending+' fiche(s) en attente', detail:'envoi à la prochaine synchronisation · '+lastTxt, pending};
+  return null;
+}
+function renderNetPill(){
+  const box = document.getElementById('net-pill');
+  if(!box) return;
+  const st = netStatus();
+  document.documentElement.classList.toggle('is-offline', !isOnline());
+  box.innerHTML = '';
+  if(!st){ box.hidden = true; return; }
+  box.hidden = false;
+  box.className = 'net-pill net-'+st.level;
+  box.title = st.label+' — '+st.detail;
+  box.setAttribute('aria-label', st.label+' — '+st.detail+(isOnline() ? ' (cliquer pour synchroniser)' : ''));
+  box.appendChild(el('span',{class:'net-dot', 'aria-hidden':'true'}));
+  box.appendChild(el('span',{class:'net-label'}, st.label));
+  box.appendChild(el('span',{class:'net-detail'}, st.detail));
+}
 
 /* ===================== CARTE DES NAVIRES =====================
    Carte interactive (Leaflet, fonds Esri : satellite, clair ou sombre, chargés à
@@ -7666,6 +8000,7 @@ function viewCarte(slot){
         el('a',{class:'btn btn-ghost btn-sm', href:vesselFinderUrl(info.mmsi), target:'_blank', rel:'noopener noreferrer'}, el('span',{html:iconExternal()}), 'VesselFinder'),
         el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'ais-'+v, onclick:()=>openLiveAisModal(v)}, 'Position en direct')) : null,
       el('div',{class:'desc'}, 'Port d’attache : '+(home ? home.name : '—')),
+      drydockOn(v, m.date) ? el('div',{class:'desc', style:'color:var(--danger-text);font-weight:600;'}, 'Arrêt technique : '+(drydockOn(v, m.date).titre||'')+' (jusqu’au '+fmtDate(drydockOn(v, m.date).fin||drydockOn(v, m.date).debut)+')') : null,
       el('div',{class:'desc'}, el('button',{type:'button', class:'link-btn', 'data-fk':'carte-jour-'+v, title:'Modifier l’organisation de la journée (planning des navires)', onclick:()=>openVesselPlanModal(v, m.date)},
         'Prévu le '+fmtDate(m.date)+' : '+(t.plan ? [t.plan.position, ...t.trips.map(tripLabel), t.plan.operations].filter(Boolean).join(' — ') || '—' : 'non renseigné au planning'))),
 
@@ -9367,8 +9702,8 @@ function viewPlanningDaily(slot, p){
   vRows.forEach(v=>vbody.appendChild(el('tr',{}, el('th',{class:'pj-name', scope:'row'}, el('div',{style:'font-weight:600;'}, planVesselName(v)), el('div',{class:'hint', style:'margin:0;'}, v ? 'position · opérations' : 'personnel à terre')),
     ...days.map(d=>{
       const r = vesselPlanAt(v, d);
-      const dock = v && state.drydocks.find(x=>x.vessel===v && x.statut!=='Annulé' && x.debut && x.debut<=d && (x.fin||x.debut)>=d);
-      return el('td',{class:'pj-ops'+(d===today ? ' pj-today' : '')},
+      const dock = drydockOn(v, d);
+      return el('td',{class:'pj-ops'+(d===today ? ' pj-today' : '')+(dock ? ' pj-dock-day' : '')},
         el('button',{type:'button', class:'pj-opsbtn', 'data-fk':'vp-'+(v||'sedentaire')+'-'+d, 'aria-label':planVesselName(v)+', '+fmtDate(d)+(r ? ' : '+[r.position, r.operations].filter(Boolean).join(' — ') : ' : non renseigné'),
           title: r ? [r.position, r.operations].filter(Boolean).join('\n') : '', onclick:()=>openVesselPlanModal(v, d)},
           dock ? el('div',{class:'pj-dock'}, 'Arrêt : '+(dock.titre||'')) : null,
@@ -9400,6 +9735,8 @@ function viewPlanningVessels(slot, p){
     el('button',{class:'btn btn-ghost btn-sm', type:'button', 'aria-label':'Période suivante', onclick:()=>shift(1)}, '→'),
     el('div',{class:'section-sub', style:'font-weight:600;'}, span==='mois' ? MONTHS_FR[Number(start.slice(5,7))-1]+' '+start.slice(0,4) : 'Semaine '+isoWeek(start)+(n>7 ? '–'+isoWeek(days[n-1]) : '')+' · du '+fmtDate(start)+' au '+fmtDate(days[n-1])),
     spanSel, el('div',{style:'flex:1;'}),
+    el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'pn-lignes-types', onclick:()=>openTripTemplatesModal()}, 'Lignes types…'),
+    canEdit() ? el('button',{class:'btn btn-accent', type:'button', 'data-fk':'pn-appliquer', onclick:()=>openApplyTemplateModal({from:days.includes(today) ? today : start, to:days[n-1]})}, 'Appliquer une ligne type…') : null,
     el('a',{class:'btn btn-ghost', href:'#/carte', 'data-fk':'pn-carte', onclick:()=>{ state._map = state._map || {date:today, vessel:''}; state._map.date = days.includes(today) ? today : start; }}, el('span',{html:iconMap()}), 'Voir sur la carte')));
   slot.appendChild(el('div',{class:'hint', style:'margin:0 0 10px;'}, 'Cliquez une case pour saisir la position prévue (ligne, port, chantier), la ligne de la carte et les opérations de la journée. Le même contenu apparaît sous le planning journalier des marins et sur la carte des navires.'));
   const head = el('tr',{}, el('th',{class:'pj-name'}, 'Navire'),
@@ -9411,10 +9748,10 @@ function viewPlanningVessels(slot, p){
     el('th',{class:'pj-name pn-vessel', scope:'row'}, el('div',{style:'font-weight:600;'}, planVesselName(v)), el('div',{class:'hint', style:'margin:0;'}, v ? (mapPort(vesselInfo(v).homePort) ? 'port d’attache : '+mapPort(vesselInfo(v).homePort).name : 'position · opérations') : 'personnel à terre')),
     ...days.map(d=>{
       const r = vesselPlanAt(v, d);
-      const dock = v && state.drydocks.find(x=>x.vessel===v && x.statut!=='Annulé' && x.debut && x.debut<=d && (x.fin||x.debut)>=d);
+      const dock = drydockOn(v, d);
       const route = r && r.routeId ? mapRoutes().find(x=>x.id===r.routeId) : null;
       const crew = v ? crewOnBoardPlan(v, d) : [];
-      return el('td',{class:'pj-ops'+(d===today ? ' pj-today' : '')},
+      return el('td',{class:'pj-ops'+(d===today ? ' pj-today' : '')+(dock ? ' pj-dock-day' : '')+(dock && planTrips(r).length ? ' pj-dock-conflict' : '')},
         el('button',{type:'button', class:'pj-opsbtn', 'data-fk':'pn-'+(v||'sedentaire')+'-'+d, 'aria-label':planVesselName(v)+', '+fmtDate(d)+(r ? ' : '+[r.position, r.operations].filter(Boolean).join(' — ') : ' : non renseigné'),
           title: r ? [r.position, route ? 'Ligne : '+routeLabel(route) : '', r.operations].filter(Boolean).join('\n') : '', onclick:()=>openVesselPlanModal(v, d)},
           dock ? el('div',{class:'pj-dock'}, 'Arrêt : '+(dock.titre||'')) : null,
@@ -9454,41 +9791,32 @@ function openVesselPlanModal(vessel, date){
   // trajets : port et heure de départ, port et heure d'arrivée (plusieurs rotations possibles)
   const trips = planTrips(r).map(t=>({...t}));
   const home = vessel ? vesselInfo(vessel).homePort : '';
-  const portOpts = ()=>{ const ps = mapPorts().slice().sort((a,b)=>(b.id===home)-(a.id===home) || a.name.localeCompare(b.name,'fr')); return [{v:'', l:'— port —'}, ...ps.map(p=>({v:p.id, l:p.name+(p.id===home ? ' (port d’attache)' : '')}))]; };
-  const tripsBox = el('div',{class:'trips-box', 'data-fk':'trajets'});
-  const sel = (t, k, label, i)=>{ const s = el('select',{class:'select', 'aria-label':label+' (trajet '+(i+1)+')', 'data-fk':'trajet-'+k+'-'+i, onchange:e=>{ t[k] = e.target.value; }}, ...portOpts().map(o=>el('option',{value:o.v}, o.l))); s.value = t[k]||''; return s; };
-  const time = (t, k, label, i)=>el('input',{type:'time', class:'select', 'aria-label':label+' (trajet '+(i+1)+')', 'data-fk':'trajet-'+k+'-'+i, value:t[k]||'', onchange:e=>{ t[k] = e.target.value; }});
-  const drawTrips = ()=>{
-    tripsBox.innerHTML = '';
-    trips.forEach((t, i)=>tripsBox.appendChild(el('div',{class:'trip-row'},
-      el('span',{class:'trip-n'}, String(i+1)),
-      el('div',{class:'trip-leg'}, el('span',{class:'hint', style:'margin:0;'}, 'Départ'), sel(t, 'from', 'Port de départ', i), time(t, 'depart', 'Heure de départ', i)),
-      el('span',{class:'trip-arrow', 'aria-hidden':'true'}, '→'),
-      el('div',{class:'trip-leg'}, el('span',{class:'hint', style:'margin:0;'}, 'Arrivée'), sel(t, 'to', 'Port d’arrivée', i), time(t, 'arrivee', 'Heure d’arrivée', i)),
-      canEdit() ? el('button',{class:'btn-danger-text', type:'button', 'aria-label':'Retirer le trajet '+(i+1), onclick:()=>{ trips.splice(i, 1); drawTrips(); }}, 'Retirer') : null)));
-    if(canEdit()) tripsBox.appendChild(el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'ajouter-trajet', onclick:()=>{
-      const last = trips[trips.length-1];
-      trips.push(last ? {from:last.to, depart:'', to:last.from, arrivee:''} : {from:home, depart:'', to:'', arrivee:''}); // retour par défaut
-      drawTrips(); }}, el('span',{html:iconPlus()}), trips.length ? 'Ajouter un trajet (retour proposé)' : 'Ajouter un trajet'));
-  };
-  drawTrips();
-  const body = el('div',{}, posField,
-    vessel ? el('div',{class:'field'}, el('div',{class:'field-label'}, 'Trajets de la journée (ports et heures)'), tripsBox) : null,
+  const tripsEd = tripsEditor(trips, home);
+  const dock = vessel ? drydockOn(vessel, date) : null;
+  const tpls = vessel ? templatesFor(vessel) : [];
+  const tplField = tpls.length && canEdit() ? (()=>{
+    const f = field('Ligne type','ligneType','select', [{v:'', l:'— choisir pour remplir les trajets —'}, ...tpls.map(x=>({v:x.id, l:tripTemplateLabel(x)}))], '', 'remplace les trajets ci-dessous (modifiables ensuite)');
+    $('select', f).addEventListener('change', e=>{
+      const x = tpls.find(y=>y.id===e.target.value); if(!x) return;
+      trips.splice(0, trips.length, ...x.trajets.map(t=>({...t}))); tripsEd.draw();
+      const ops = $('[name=operations]', body); if(ops && !ops.value.trim() && x.operations) ops.value = x.operations;
+    });
+    return f; })() : null;
+  const body = el('div',{},
+    dock ? el('div',{class:'banner banner-danger', role:'status', 'data-fk':'jour-arret'}, 'Arrêt technique « '+(dock.titre||'Arrêt technique')+' » du '+fmtDate(dock.debut)+' au '+fmtDate(dock.fin||dock.debut)+(dock.lieu ? ' ('+dock.lieu+')' : '')+' : le navire n’est pas en service ce jour-là.') : null,
+    posField, tplField,
+    vessel ? el('div',{class:'field'}, el('div',{class:'field-label'}, 'Trajets de la journée (ports et heures)'), tripsEd.el) : null,
+    dock ? field('Trajets malgré l’arrêt technique','confirmerArret','select', [{v:'',l:'Non'},{v:'1',l:'Oui, je confirme (essais, convoyage…)'}], planTrips(r).length ? '1' : '') : null,
     routeField,
     field(vessel ? 'Opérations de la journée' : 'Informations','operations','textarea', null, r ? r.operations : '', vessel ? 'chargements, passagers, escales…' : 'congés, réunions, visites…'),
     vessel ? el('div',{class:'hint'}, aboard.length ? 'À bord (planning) : '+aboard.map(crewFullName).join(', ') : 'Aucun marin au planning ce jour-là.') : null);
   openModal({title:planVesselName(vessel)+' — '+WEEKDAYS_FR[new Date(date+'T12:00:00').getDay()]+' '+fmtDate(date), body, readOnly: !canEdit(), wide: !!vessel,
-    validate: ()=>{
-      for(const [i, t] of trips.entries()){
-        if(!t.from && !t.to && !t.depart && !t.arrivee) continue;
-        if(!t.from || !t.to) return 'Trajet '+(i+1)+' : choisissez le port de départ et le port d’arrivée.';
-        if(t.from===t.to) return 'Trajet '+(i+1)+' : ports de départ et d’arrivée identiques.';
-        if(t.depart && t.arrivee && t.arrivee<t.depart) return 'Trajet '+(i+1)+' : l’heure d’arrivée est avant l’heure de départ.';
-      }
-      return null;
+    validate: d=>{
+      if(dock && trips.some(t=>t.from && t.to) && d.confirmerArret!=='1') return 'Arrêt technique prévu ce jour-là : confirmez les trajets (essais, convoyage…) ou retirez-les.';
+      return tripsError(trips);
     },
     onSubmit: async d=>{
-      const kept = trips.filter(t=>t.from && t.to).map(t=>({from:t.from, depart:t.depart||'', to:t.to, arrivee:t.arrivee||''}));
+      const kept = cleanTrips(trips);
       const pos = d.position.trim() && d.position.trim()!==tripsPosition(planTrips(r)) ? d.position.trim() : tripsPosition(kept);
       setVesselPlan(vessel, date, pos, d.operations.trim(), d.routeId===undefined ? undefined : d.routeId, vessel ? kept : undefined);
       const rt = d.routeId && mapRoutes().find(x=>x.id===d.routeId);
@@ -9497,7 +9825,125 @@ function openVesselPlanModal(vessel, date){
       toast('Organisation enregistrée');
     }});
 }
+/* éditeur de trajets (journée d'un navire, ligne type) : modifie le tableau trips en place */
+function tripsEditor(trips, home){
+  const portOpts = ()=>{ const ps = mapPorts().slice().sort((a,b)=>(b.id===home)-(a.id===home) || a.name.localeCompare(b.name,'fr')); return [{v:'', l:'— port —'}, ...ps.map(p=>({v:p.id, l:p.name+(p.id===home ? ' (port d’attache)' : '')}))]; };
+  const box = el('div',{class:'trips-box', 'data-fk':'trajets'});
+  const sel = (t, k, label, i)=>{ const s = el('select',{class:'select', 'aria-label':label+' (trajet '+(i+1)+')', 'data-fk':'trajet-'+k+'-'+i, onchange:e=>{ t[k] = e.target.value; }}, ...portOpts().map(o=>el('option',{value:o.v}, o.l))); s.value = t[k]||''; return s; };
+  const time = (t, k, label, i)=>el('input',{type:'time', class:'select', 'aria-label':label+' (trajet '+(i+1)+')', 'data-fk':'trajet-'+k+'-'+i, value:t[k]||'', onchange:e=>{ t[k] = e.target.value; }});
+  const draw = ()=>{
+    box.innerHTML = '';
+    trips.forEach((t, i)=>box.appendChild(el('div',{class:'trip-row'},
+      el('span',{class:'trip-n'}, String(i+1)),
+      el('div',{class:'trip-leg'}, el('span',{class:'hint', style:'margin:0;'}, 'Départ'), sel(t, 'from', 'Port de départ', i), time(t, 'depart', 'Heure de départ', i)),
+      el('span',{class:'trip-arrow', 'aria-hidden':'true'}, '→'),
+      el('div',{class:'trip-leg'}, el('span',{class:'hint', style:'margin:0;'}, 'Arrivée'), sel(t, 'to', 'Port d’arrivée', i), time(t, 'arrivee', 'Heure d’arrivée', i)),
+      canEdit() ? el('button',{class:'btn-danger-text', type:'button', 'aria-label':'Retirer le trajet '+(i+1), onclick:()=>{ trips.splice(i, 1); draw(); }}, 'Retirer') : null)));
+    if(canEdit()) box.appendChild(el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'ajouter-trajet', onclick:()=>{
+      const last = trips[trips.length-1];
+      trips.push(last ? {from:last.to, depart:'', to:last.from, arrivee:''} : {from:home, depart:'', to:'', arrivee:''}); // retour par défaut
+      draw(); }}, el('span',{html:iconPlus()}), trips.length ? 'Ajouter un trajet (retour proposé)' : 'Ajouter un trajet'));
+  };
+  draw();
+  return {el:box, draw};
+}
+function tripsError(trips){
+  for(const [i, t] of trips.entries()){
+    if(!t.from && !t.to && !t.depart && !t.arrivee) continue;
+    if(!t.from || !t.to) return 'Trajet '+(i+1)+' : choisissez le port de départ et le port d’arrivée.';
+    if(t.from===t.to) return 'Trajet '+(i+1)+' : ports de départ et d’arrivée identiques.';
+    if(t.depart && t.arrivee && t.arrivee<t.depart) return 'Trajet '+(i+1)+' : l’heure d’arrivée est avant l’heure de départ.';
+  }
+  return null;
+}
+const cleanTrips = trips=>trips.filter(t=>t.from && t.to).map(t=>({from:t.from, depart:t.depart||'', to:t.to, arrivee:t.arrivee||''}));
+/* arrêt technique en cours un jour donné */
+function drydockOn(v, d){ return v ? state.drydocks.find(x=>x.vessel===v && x.statut!=='Annulé' && x.debut && x.debut<=d && (x.fin||x.debut)>=d) || null : null; }
+
+/* ---------- lignes types : rotations habituelles avec leurs horaires ----------
+   Réglage partagé tripTemplates : items [{id, name, vessel ("" : tous les navires), trajets, operations}].
+   Appliquées à un jour (fenêtre de la journée) ou à une période (jours de la semaine choisis) ;
+   les jours d'arrêt technique ne sont pas planifiés. */
+function tripTemplates(){ const s = setting('tripTemplates'); return s && Array.isArray(s.items) ? s.items : []; }
+function templatesFor(v){ return tripTemplates().filter(t=>!t.vessel || t.vessel===v); }
+function tripTemplateLabel(t){ return (t.name || tripsPosition(t.trajets||[]))+(t.trajets && t.trajets[0] && t.trajets[0].depart ? ' ('+t.trajets.map(x=>x.depart).filter(Boolean).join(' / ')+')' : ''); }
+function openTripTemplatesModal(vessel){
+  const box = el('div',{});
+  const draw = ()=>{
+    box.innerHTML = '';
+    const list = tripTemplates();
+    if(!list.length) box.appendChild(el('div',{class:'hint'}, 'Aucune ligne type. Exemple : « Port Haliguen – Le Palais » avec ses horaires habituels, à appliquer ensuite sur un jour ou une semaine.'));
+    list.forEach(t=>box.appendChild(el('div',{class:'settings-row', 'data-fk':'ligne-type-'+t.id},
+      el('div',{}, el('div',{class:'lbl'}, t.name || tripsPosition(t.trajets)), el('div',{class:'desc'}, (t.vessel ? vesselName(t.vessel) : 'Tous les navires')+' · '+t.trajets.map(tripLabel).join(' · '))),
+      canEdit() ? el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>openTripTemplateModal(t, null, draw)}, 'Modifier') : null)));
+  };
+  draw();
+  openModal({title:'Lignes types', infoOnly:true, wide:true, body:el('div',{},
+    el('div',{class:'hint', style:'margin:0 0 10px;'}, 'Rotations habituelles avec leurs horaires. Choisissez une ligne type dans la journée d’un navire, ou « Appliquer une ligne type » pour toute une période.'),
+    canEdit() ? el('button',{class:'btn btn-accent btn-sm', type:'button', 'data-fk':'nouvelle-ligne-type', onclick:()=>openTripTemplateModal(null, {vessel:vessel||''}, draw)}, el('span',{html:iconPlus()}), 'Nouvelle ligne type') : null,
+    box)});
+}
+function openTripTemplateModal(tpl, prefill, done){
+  const isEdit = !!tpl;
+  const base = tpl || prefill || {};
+  const trips = (base.trajets||[]).map(t=>({...t}));
+  const vSel = field('Navire','vessel','select', [{v:'', l:'Tous les navires'}, ...VESSELS.map(v=>({v:v.key, l:v.name}))], base.vessel||'');
+  const ed = tripsEditor(trips, base.vessel ? vesselInfo(base.vessel).homePort : '');
+  if(!trips.length){ trips.push({from:base.vessel ? vesselInfo(base.vessel).homePort : '', depart:'', to:'', arrivee:''}); ed.draw(); }
+  // navire choisi : son port d'attache devient le départ du premier trajet s'il n'est pas renseigné
+  $('select', vSel).addEventListener('change', e=>{ if(e.target.value && trips[0] && !trips[0].from){ trips[0].from = vesselInfo(e.target.value).homePort; ed.draw(); } });
+  const body = el('div',{}, field('Nom','name','text', null, base.name||'', 'ex. Port Haliguen – Le Palais (été)'), vSel,
+    el('div',{class:'field'}, el('div',{class:'field-label'}, 'Trajets (ports et heures)'), ed.el),
+    field('Opérations habituelles','operations','text', null, base.operations||'', 'facultatif : reprises dans la journée si elle est vide'));
+  openModal({title:isEdit ? 'Ligne type — '+tripTemplateLabel(tpl) : 'Nouvelle ligne type', body, wide:true, readOnly:!canEdit(),
+    validate: ()=>tripsError(trips) || (!cleanTrips(trips).length ? 'Ajoutez au moins un trajet.' : null),
+    onDelete: isEdit ? async ()=>{ saveSetting('tripTemplates', {items:tripTemplates().filter(x=>x.id!==tpl.id)}); logHistory('settings', 'tripTemplates', 'Ligne type '+tripTemplateLabel(tpl), 'supprimé', tpl.vessel||null); toast('Ligne type supprimée'); done && setTimeout(done, 0); } : null,
+    onSubmit: async d=>{
+      const rec = {id: isEdit ? tpl.id : 'lt-'+uid(), name:d.name.trim(), vessel:d.vessel, trajets:cleanTrips(trips), operations:d.operations.trim()};
+      saveSetting('tripTemplates', {items: isEdit ? tripTemplates().map(x=>x.id===tpl.id ? rec : x) : [...tripTemplates(), rec]});
+      logHistory('settings', 'tripTemplates', 'Ligne type '+tripTemplateLabel(rec), isEdit ? 'modifié' : 'créé', rec.vessel||null, rec.trajets.map(tripLabel).join(' · '));
+      toast(isEdit ? 'Ligne type mise à jour' : 'Ligne type créée');
+      done && setTimeout(done, 0);
+    }});
+}
+/* applique une ligne type à un jour : renvoie 'fait', 'arret' (arrêt technique) ou 'occupe' (déjà des trajets) */
+function applyTripTemplate(v, date, tpl, mode){
+  if(drydockOn(v, date)) return 'arret';
+  const r = vesselPlanAt(v, date), cur = planTrips(r);
+  if(mode==='vides' && cur.length) return 'occupe';
+  const trips = mode==='ajouter' ? [...cur, ...tpl.trajets] : tpl.trajets.map(t=>({...t}));
+  const pos = r && planPositionShown(r) ? r.position : tripsPosition(trips);
+  setVesselPlan(v, date, pos, (r && r.operations) || tpl.operations || '', undefined, trips);
+  return 'fait';
+}
+function openApplyTemplateModal(prefill){
+  prefill = prefill || {};
+  const vessel = prefill.vessel || state.activeVessel;
+  const tplOpts = v=>templatesFor(v).map(x=>({v:x.id, l:tripTemplateLabel(x)}));
+  const days = [['1','Lun'],['2','Mar'],['3','Mer'],['4','Jeu'],['5','Ven'],['6','Sam'],['0','Dim']];
+  const body = el('div',{},
+    fieldRow(field('Navire','vessel','select', VESSELS.map(v=>({v:v.key, l:v.name})), vessel), field('Ligne type','tpl','select', tplOpts(vessel), '')),
+    fieldRow(field('Du','from','date', null, prefill.from || todayISO()), field('Au','to','date', null, prefill.to || addDays(prefill.from || todayISO(), 6))),
+    el('div',{class:'field'}, el('div',{class:'field-label'}, 'Jours de la semaine'),
+      el('div',{class:'apply-days'}, ...days.map(([k,l])=>el('label',{}, el('input',{type:'checkbox', name:'jour-'+k, 'data-fk':'jour-'+k, checked: k==='0' ? null : ''}), ' '+l)))),
+    field('Jours déjà planifiés','mode','select', [{v:'vides', l:'Ne pas toucher aux jours qui ont déjà des trajets'}, {v:'remplacer', l:'Remplacer leurs trajets'}, {v:'ajouter', l:'Ajouter ces trajets aux leurs'}], 'vides'),
+    el('div',{class:'hint'}, 'Les jours d’arrêt technique du navire ne sont pas planifiés.'));
+  const vs = $('[name=vessel]', body), ts = $('[name=tpl]', body);
+  vs.addEventListener('change', ()=>{ ts.innerHTML = ''; tplOpts(vs.value).forEach(o=>ts.appendChild(el('option',{value:o.v}, o.l))); });
+  openModal({title:'Appliquer une ligne type', body, submitLabel:'Appliquer', readOnly:!canEdit(),
+    validate: d=>!d.tpl ? 'Aucune ligne type pour ce navire : créez-en une (« Lignes types… »).' : (!d.from || !d.to || d.to<d.from) ? 'Période invalide.' : diffDays(d.from, d.to) > 366 ? 'Un an au plus.'
+      : !days.some(([k])=>$('[name="jour-'+k+'"]', body).checked) ? 'Cochez au moins un jour de la semaine.' : null,
+    onSubmit: async d=>{
+      const tpl = tripTemplates().find(x=>x.id===d.tpl);
+      const wd = new Set(days.map(([k])=>k).filter(k=>$('[name="jour-'+k+'"]', body).checked));
+      const n = {fait:0, arret:0, occupe:0};
+      for(let x = d.from; x<=d.to; x = addDays(x, 1)){ if(wd.has(String(new Date(x+'T12:00:00').getDay()))) n[applyTripTemplate(d.vessel, x, tpl, d.mode)]++; }
+      logHistory('vesselPlan', null, vesselName(d.vessel)+' — ligne type', 'organisation modifiée', d.vessel, tripTemplateLabel(tpl)+' du '+fmtDate(d.from)+' au '+fmtDate(d.to)+' : '+n.fait+' jour(s)');
+      toast(n.fait+' jour(s) planifié(s)'+(n.arret ? ' · '+n.arret+' jour(s) d’arrêt technique ignoré(s)' : '')+(n.occupe ? ' · '+n.occupe+' jour(s) déjà planifié(s) gardé(s)' : ''), 'success');
+    }});
+}
 function openCrewPlanCodesModal(){
+
   let items = crewPlanCodes().map(x=>({...x}));
   const box = el('div',{});
   function draw(){
@@ -11251,7 +11697,7 @@ function exportSpecPdf(spec){ printSheet(buildExportSheet(spec)); }
    APP_BUILD est inscrit à la publication (tools/preparer-deploiement.ps1) :
    « aaaammjj-hhmm-empreinte ». Fichier ouvert en local : version non numérotée.
    La recherche de mise à jour lit version.json sur le site publié. */
-const APP_BUILD = '20261024-1425-428025e2f663';
+const APP_BUILD = '20261024-1441-84e952f5f52a';
 function appBuildInfo(build){
   const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(?:-(\w+))?/.exec(build||'');
   return m ? {build, date:m[1]+'-'+m[2]+'-'+m[3], time:m[4]+':'+m[5], label:m[3]+'/'+m[2]+'/'+m[1]+' à '+m[4]+'h'+m[5]} : null;
@@ -15236,7 +15682,160 @@ autotest('Carte des navires', 'ports d’attache par défaut ; trajets du jour (
   expect.ok(buildPlanningICS({from:t, to:t, vessels:true}).text.includes('Trajet : 08:30 Quiberon – Port Haliguen'), 'trajets dans l’export agenda');
   state.route = '#/autotest';
 });
+autotest('Planning', 'lignes types : création, application sur une période (jours choisis), arrêts techniques respectés', async ()=>{
+  const t = mondayOf(todayISO()), sat = addDays(t, 5);
+  addDoc('drydocks','drydocks',{vessel:'men-du', titre:'Carénage', debut:addDays(t, 2), fin:addDays(t, 3), statut:'Prévu', travaux:[]});
+  state._plan = {start:t, weeks:8, vessel:'', view:'navires', dstart:t}; render(); state.route = '#/planning'; renderContent();
+  expect.ok($('#content-slot [data-fk="pn-men-du-'+addDays(t, 2)+'"]').closest('td').classList.contains('pj-dock-day'), 'jours d’arrêt technique grisés');
+  $('#content-slot [data-fk=pn-lignes-types]').click();
+  $('.modal [data-fk=nouvelle-ligne-type]').click();
+  const set = (k, v)=>{ const i = $$('.modal [data-fk="trajet-'+k+'"]').pop(); i.value = v; i.dispatchEvent(new Event(i.tagName==='SELECT' ? 'change' : 'change')); };
+  fillModal({name:'Haliguen – Le Palais', vessel:'men-du', operations:'Fret et passagers'}); $('.modal [name=vessel]').dispatchEvent(new Event('change'));
+  set('to-0', 'le-palais'); set('depart-0', '08:30'); set('arrivee-0', '09:15');
+  $$('.modal [data-fk=ajouter-trajet]').pop().click(); set('depart-1', '17:00'); set('arrivee-1', '17:45');
+  confirmTopModal(); await tick(20);
+  const tpl = tripTemplates()[0];
+  expect.ok(tpl && tpl.trajets.length===2 && tpl.trajets[0].from==='port-haliguen' && tpl.trajets[1].to==='port-haliguen', 'ligne type enregistrée (départ : port d’attache, retour proposé)');
+  closeAllModals();
+  setVesselPlan('men-du', addDays(t, 1), '', '', undefined, [{from:'port-haliguen', depart:'06:00', to:'houat', arrivee:'07:00'}]);
+  $('#content-slot [data-fk=pn-appliquer]').click();
+  fillModal({vessel:'men-du'}); $('.modal [name=vessel]').dispatchEvent(new Event('change')); // la liste des lignes types suit le navire
+  fillModal({tpl:tpl.id, from:t, to:addDays(t, 6)});
+  expect.ok($('.modal [data-fk=jour-6]').checked && !$('.modal [data-fk=jour-0]').checked, 'lundi à samedi cochés par défaut');
+  confirmTopModal(); await tick(20);
+  const planned = d=>planTrips(vesselPlanAt('men-du', d)).map(tripLabel).join(' / ');
+  expect.equal(planned(t), '08:30 Quiberon – Port Haliguen → 09:15 Belle-Île – Le Palais / 17:00 Belle-Île – Le Palais → 17:45 Quiberon – Port Haliguen', 'lundi planifié');
+  expect.ok(planned(addDays(t, 1)).startsWith('06:00'), 'jour déjà planifié gardé');
+  expect.ok(!planTrips(vesselPlanAt('men-du', addDays(t, 2))).length && !planTrips(vesselPlanAt('men-du', addDays(t, 3))).length, 'arrêt technique : pas de trajet');
+  expect.ok(planTrips(vesselPlanAt('men-du', sat)).length===2 && !vesselPlanAt('men-du', addDays(t, 6)), 'samedi oui, dimanche non');
+  expect.equal(vesselPlanAt('men-du', t).operations, 'Fret et passagers', 'opérations habituelles reprises');
+  // journée pendant l'arrêt : trajets à confirmer
+  openVesselPlanModal('men-du', addDays(t, 2));
+  expect.ok($('.modal [data-fk=jour-arret]'), 'arrêt technique signalé dans la journée');
+  fillModal({ligneType:tpl.id}); $('.modal [name=ligneType]').dispatchEvent(new Event('change'));
+  expect.equal($$('.modal .trip-row').length, 2, 'ligne type appliquée dans la journée');
+  confirmTopModal();
+  expect.ok($('.modal [role=alert]').textContent.includes('Arrêt technique'), 'confirmation demandée');
+  fillModal({confirmerArret:'1'}); confirmTopModal(); await tick(20);
+  expect.equal(planTrips(vesselPlanAt('men-du', addDays(t, 2))).length, 2, 'trajets confirmés (essais)');
+  renderContent();
+  expect.ok($('#content-slot [data-fk="pn-men-du-'+addDays(t, 2)+'"]').closest('td').classList.contains('pj-dock-conflict'), 'trajet pendant un arrêt mis en évidence');
+  state.route = '#/autotest';
+});
+autotest('Entretien', 'maintenance prévisionnelle : date estimée des échéances au compteur, dans le calendrier', ()=>{
+  const d = k=>addDays(todayISO(), -k);
+  recordMeterReading('viga', 'mp1', 1000, {date:d(100)});
+  recordMeterReading('viga', 'mp1', 1450, {date:d(0)}); // ≈ 5 h par jour
+  const id = addDoc('tasks','tasks',{vessel:'viga', category:'Moteur', task:'Vidange MP bâbord', unit:'heures', meter:'mp1', cycleHours:250, hoursAtLast:1400});
+  const t = state.tasks.find(x=>x.id===id);
+  const est = taskEstimatedDate(t);
+  expect.ok(est && diffDays(todayISO(), est)>=35 && diffDays(todayISO(), est)<=45, 'reste 200 h à 5 h/jour : environ 40 jours ('+est+')');
+  expect.ok(taskDueText(t).includes('vers le '+fmtDate(est)), 'date estimée affichée : '+taskDueText(t));
+  const ev = buildCalendarEvents(todayISO(), addDays(todayISO(), 90)).find(e=>e.key==='task:'+id);
+  expect.ok(ev && ev.kind==='projected' && ev.date===est && ev.sub.includes('estimé au compteur'), 'au calendrier (prévisionnel)');
+  const idle = addDoc('tasks','tasks',{vessel:'quehan', category:'Moteur', task:'Sans relevés', unit:'heures', meter:'mp1', cycleHours:250, hoursAtLast:0});
+  expect.equal(taskEstimatedDate(state.tasks.find(x=>x.id===idle)), null, 'pas d’estimation sans utilisation connue');
+});
+autotest('Commandes', 'articles sous le minimum proposés, commandes créées en un clic, bon groupé par fournisseur', async ()=>{
+  const a = addDoc('inventory','inventory',{vessel:'men-du', designation:'Filtre GO', reference:'F1', fournisseur:'Le Teuff', quantite:1, seuilAlerte:3, unite:'pièce', nature:'piece'});
+  addDoc('inventory','inventory',{vessel:'men-du', designation:'Huile 15W40', fournisseur:'Le Teuff', quantite:20, seuilAlerte:20, unite:'L', nature:'consommable'});
+  addDoc('inventory','inventory',{vessel:'men-du', designation:'Joint', quantite:0, seuilAlerte:2, nature:'piece'});
+  addDoc('inventory','inventory',{vessel:'men-du', designation:'Graisse', quantite:9, seuilAlerte:2, nature:'consommable'});
+  state._ordCompany = false; state.activeVessel = 'men-du'; render(); state.route = '#/commandes'; renderContent();
+  const panel = $('#content-slot [data-fk=a-commander]');
+  expect.ok(panel && panel.textContent.includes('3 article(s)') && panel.textContent.includes('Le Teuff') && panel.textContent.includes('Sans fournisseur'), 'articles sous le minimum, par fournisseur');
+  expect.ok(panel.textContent.includes('Filtre GO : 1/3 → 5'), 'quantité proposée : retour à deux fois le minimum');
+  $('#content-slot [data-fk=creer-commandes-le-teuff]').click(); await tick(20);
+  expect.equal(state.orders.length, 2);
+  const o = state.orders.find(x=>x.inventoryId===a);
+  expect.ok(o && o.quantite===5 && o.fournisseur==='Le Teuff' && o.statut==='À commander' && o.vessel==='men-du', 'commande reliée à l’article');
+  expect.ok(!$('#content-slot [data-fk=a-commander]').textContent.includes('Le Teuff'), 'articles commandés retirés des propositions');
+  $('#content-slot [data-fk=cde-bons]').click();
+  const row = $('.modal [data-fk=bon-le-teuff]');
+  expect.ok(row && row.textContent.includes('Le Teuff (2)') && $('a[href^="mailto:"]', row).href.includes('Filtre%20GO'), 'bon groupé : 2 articles, e-mail');
+  $('[data-fk=marquer-commande]', row).click(); await tick(20);
+  expect.ok(state.orders.every(x=>x.statut==='Commandé' && x.dateCommande===todayISO()), 'passées à « Commandé »');
+  closeAllModals();
+  state.route = '#/autotest';
+});
+autotest('Inventaire', 'transfert de stock entre lieux : sortie d’un côté, entrée de l’autre, article créé à l’arrivée', async ()=>{
+  const a = addDoc('inventory','inventory',{vessel:'quehan', designation:'Filtre à huile', reference:'LF-3000', quantite:10, unite:'pièce', nature:'piece', fournisseur:'Le Teuff'});
+  state.activeVessel = 'quehan'; state._invLoc = ''; render(); state.route = '#/inventaire'; renderContent();
+  $('#content-slot [data-fk="transfert-'+a+'"]').click();
+  fillModal({dest:'site:chantier', qty:'12'}); confirmTopModal();
+  expect.ok($('.modal [role=alert]').textContent.includes('supérieure au stock'), 'pas plus que le stock');
+  fillModal({qty:'4', motif:'retour au chantier'}); confirmTopModal(); await tick(20);
+  const src = state.inventory.find(i=>i.id===a), dst = state.inventory.find(i=>i.id!==a);
+  expect.ok(src.quantite===6 && dst && invLoc(dst)==='site:chantier' && dst.quantite===4 && dst.reference==='LF-3000', 'stocks mis à jour, article créé au chantier');
+  expect.ok(src.mouvements[0].transfertId && src.mouvements[0].transfertId===dst.mouvements[0].transfertId && dst.mouvements[0].motif.includes('Transfert depuis Quéhan'), 'mouvements reliés');
+  openStockTransferModal(src); fillModal({dest:'site:chantier', qty:'2'}); confirmTopModal(); await tick(20);
+  expect.ok(state.inventory.length===2 && dst.quantite===6, 'même article retrouvé au chantier');
+  state.route = '#/autotest';
+});
+autotest('Carburant', 'transfert du stock de la compagnie vers un navire, au prix moyen ; coût de revient par navire', async ()=>{
+  addDoc('fuel','fuel',{vessel:'', site:'chantier', date:todayISO(), type:'Gazole', quantite:1000, unite:'L', prixLitre:1.5, prixTotal:1500});
+  expect.ok(companyFuelStock()[0].litres===1000 && companyFuelStock()[0].prixLitre===1.5);
+  state._fuelCompany = true; render(); state.route = '#/carburant'; renderContent();
+  expect.ok($('#content-slot [data-fk=stock-compagnie]').textContent.replace(/\s/g,'').includes('1000L'), 'stock de la compagnie affiché');
+  $('#content-slot [data-fk=transfert-carburant]').click();
+  fillModal({vessel:'viga', qty:'300', caisse:'hu-bd'}); confirmTopModal();
+  expect.ok($('.modal [role=alert]').textContent.includes('caisse'), 'caisse du bon produit');
+  fillModal({caisse:'go-bd'}); confirmTopModal(); await tick(20);
+  expect.equal(companyFuelStock()[0].litres, 700, 'stock compagnie diminué');
+  const from = addDays(todayISO(), -30), to = todayISO();
+  expect.ok(consoBilanFor('viga', from, to).goL===300 && consoBilanFor('viga', from, to).goCost===450, 'gasoil et coût passés au navire');
+  expect.equal(consoBilanFor('', from, to).total + consoBilanFor('viga', from, to).total, 1500, 'coût total de la compagnie inchangé');
+  expect.equal(fuelLitres('viga', 'Gazole', from, to), 300, 'compté dans la consommation du navire');
+  // coût de revient
+  addDoc('orders','orders',{vessel:'viga', designation:'Pompe', statut:'Commandé', prixEstime:200, dateCommande:todayISO()});
+  addDoc('orders','orders',{vessel:'viga', designation:'Annulée', statut:'Annulé', prixEstime:999, dateCommande:todayISO()});
+  addDoc('drydocks','drydocks',{vessel:'viga', titre:'Carénage', debut:todayISO(), fin:todayISO(), statut:'En cours', travaux:[{id:'w', libelle:'Peinture', cout:1000, statut:'Fait'}]});
+  const c = costPriceFor('viga', from, to);
+  expect.ok(c.fuel===450 && c.orders===200 && c.docks===1000 && c.total===1650, 'carburant + commandes + arrêts : '+JSON.stringify(c));
+  state._consoView = 'bilan'; state.route = '#/consommations'; renderContent();
+  expect.ok($('#content-slot [data-fk=cout-revient]').textContent.includes('Viga'), 'coût de revient dans le bilan');
+  state.route = '#/autotest';
+});
+autotest('Recherche', 'recherche globale (Ctrl+K) : tous les modules, plusieurs mots, ouverture de la fiche', async ()=>{
+  addDoc('jobs','jobs',{vessel:'viga', titre:'Joint de porte étanche', statut:'À faire'});
+  addDoc('inventory','inventory',{vessel:'men-du', designation:'Filtre à gasoil', reference:'FG-77', quantite:2, nature:'piece'});
+  addDoc('crew','crew',{nom:'Le Goff', prenom:'Jean', poste:'Matelot'});
+  expect.ok(globalSearch('porte joint').some(h=>h.group==='Jobs ponctuels'), 'plusieurs mots dans le désordre');
+  expect.ok(globalSearch('fg-77').some(h=>h.group==='Inventaire' && h.title==='Filtre à gasoil'), 'par référence');
+  expect.ok(globalSearch('etanche').length && globalSearch('LE GOFF').some(h=>h.group==='Marins'), 'accents et majuscules ignorés');
+  expect.ok(globalSearch('carte').some(h=>h.group==='Pages' && h.route==='#/carte'), 'pages du menu');
+  render(); state.route = '#/dashboard'; render();
+  document.dispatchEvent(new KeyboardEvent('keydown', {key:'k', ctrlKey:true, bubbles:true}));
+  const input = $('.modal [data-fk=recherche-globale]');
+  expect.ok(input, 'Ctrl+K ouvre la recherche');
+  input.value = 'filtre gasoil'; input.dispatchEvent(new Event('input'));
+  expect.ok($('.modal [data-fk=resultat-0]').textContent.includes('Filtre à gasoil'));
+  input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', bubbles:true})); await tick(20);
+  expect.ok(state.route==='#/inventaire' && state.activeVessel==='men-du' && $('.modal [name=designation]').value==='Filtre à gasoil', 'fiche ouverte sur sa page');
+  closeAllModals();
+  expect.ok($('.topbar [data-fk=ouvrir-recherche]'), 'bouton dans la barre du haut');
+  state.route = '#/autotest';
+});
+autotest('Synchronisation', 'hors ligne et saisies en attente affichés dans la barre du haut', async ()=>{
+  render(); state.route = '#/dashboard'; render();
+  expect.ok($('#net-pill').hidden, 'rien à signaler : pastille cachée');
+  Object.assign(state, {fileName:'seaway-gmao-data.json', lastSyncAt:new Date(Date.now()-60000).toISOString()});
+  addDoc('jobs','jobs',{vessel:'viga', titre:'Saisi hors ligne'}); addDoc('jobs','jobs',{vessel:'viga', titre:'Deuxième'});
+  clearTimeout(saveTimer);
+  expect.equal(pendingChangesCount(), 2, 'fiches modifiées depuis la dernière synchro');
+  renderNetPill();
+  expect.ok(!$('#net-pill').hidden && $('#net-pill').textContent.includes('2 fiche(s) en attente') && $('#net-pill').classList.contains('net-wait'), 'en attente d’envoi');
+  patch(window, 'isOnline', ()=>false);
+  renderNetPill();
+  expect.ok($('#net-pill').classList.contains('net-off') && $('#net-pill').textContent.includes('Hors ligne') && $('#net-pill').textContent.includes('2 fiche(s) en attente d’envoi'), 'hors ligne, avec les fiches en attente');
+  expect.ok(document.documentElement.classList.contains('is-offline'), 'barre du haut soulignée');
+  testRestores.pop()(); renderNetPill();
+  state.dirty = false; renderNetPill();
+  expect.ok($('#net-pill').hidden && !document.documentElement.classList.contains('is-offline'), 'tout envoyé : pastille cachée');
+  state.route = '#/autotest';
+});
 /* ===================== exécution et affichage ===================== */
+
 
 const autotestRun = {running:false, results:null, startedAt:0, duration:0};
 async function runAutotests(){
@@ -15516,7 +16115,7 @@ autotest('Paramètres', 'export Excel (.xlsx) relu par le lecteur de classeurs, 
 });
 autotest('Paramètres', 'version affichée avec sa date, recherche de mise à jour (version publiée plus récente)', async ()=>{
   expect.ok(appBuildInfo('20261024-1203-ff54f95a493b').label==='24/10/2026 à 12h03', 'date lue dans la version');
-  expect.equal(appBuildInfo('20261024-1425-428025e2f663'), null, 'fichier non publié');
+  expect.equal(appBuildInfo('20261024-1441-84e952f5f52a'), null, 'fichier non publié');
   render(); state.route = '#/parametres'; renderContent();
   const card = $('#content-slot [data-fk=carte-version]');
   expect.ok(card && $('[data-fk=version-app]', card).textContent.length>0, 'carte Version et mises à jour');

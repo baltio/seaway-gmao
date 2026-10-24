@@ -6,9 +6,9 @@
    - Tout le reste (Google Drive, connexion Google) : jamais mis en cache.
    Les DONNÉES ne passent pas par ici : elles restent dans le navigateur
    (IndexedDB) et dans l'emplacement de synchronisation.
-   20261024-1425-428025e2f663 est remplacé à chaque déploiement (tools/preparer-deploiement.ps1),
+   20261024-1441-84e952f5f52a est remplacé à chaque déploiement (tools/preparer-deploiement.ps1),
    ce qui déclenche la mise à jour de l'application sur les appareils. */
-const VERSION = '20261024-1425-428025e2f663';
+const VERSION = '20261024-1441-84e952f5f52a';
 const CACHE = 'seaway-gmao-' + VERSION;
 const FONTS = 'seaway-gmao-polices';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png',
