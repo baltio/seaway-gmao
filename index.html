@@ -273,7 +273,12 @@ tr.ord-annule>td{color:var(--text-soft);}
 .fleet-layout{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:14px;align-items:start;}
 @media (max-width:1000px){ .fleet-layout{grid-template-columns:1fr;} }
 .fleet-map-card{padding:0;overflow:hidden;}
-.fleet-map{height:min(72vh, 680px);min-height:420px;background:#cfe3f1;position:relative;}
+.fleet-map{height:min(78vh, 760px);min-height:420px;background:#cfe3f1;position:relative;}
+.fleet-map.map-satellite{background:#0b2233;} .fleet-map.map-sombre{background:#1e2226;} .fleet-map.map-clair{background:#e6e6e3;}
+.map-sombre .map-schema .map-sea, .map-satellite .map-schema .map-sea{fill:#16283a;}
+.map-sombre .map-schema .map-port-label, .map-satellite .map-schema .map-port-label{fill:#e8eef3;}
+.map-satellite .leaflet-tooltip, .map-sombre .leaflet-tooltip{background:rgba(10,37,64,.92);color:#fff;border-color:transparent;}
+
 .fleet-map.map-picking, .fleet-map.map-picking .leaflet-container{cursor:crosshair;}
 .fleet-side{display:flex;flex-direction:column;gap:10px;}
 .fleet-vessel{padding:12px 14px;border-left:5px solid var(--c);}
@@ -7413,7 +7418,7 @@ const CONSO_CSV_COLS = [
 ];
 
 /* ===================== CARTE DES NAVIRES =====================
-   Carte interactive (Leaflet, fond OpenStreetMap et balisage OpenSeaMap, chargés à
+   Carte interactive (Leaflet, fonds Esri : satellite, clair ou sombre, chargés à
    la demande ; hors ligne ou sans réseau : schéma SVG) : ports, ports d'attache,
    lignes de chaque navire (tracés schématiques : port de départ, points de passage,
    port d'arrivée) et ligne du jour d'après le planning (vesselPlan.routeId).
@@ -7421,7 +7426,19 @@ const CONSO_CSV_COLS = [
    MarineTraffic / VesselFinder par MMSI, et carte AIS VesselFinder à afficher.
    Réglages partagés : mapPorts {items:[{id, name, lat, lng}]}, mapRoutes {items:[{id,
    vessel, name, from, to, via:[[lat, lng]…], notes}]}, vesselInfo {items:{<navire>:{mmsi, homePort}}}. */
-const MAP_DEFAULT_BOUNDS = [[46.05, -5.25], [48.85, -1.0]]; // de La Rochelle à Morlaix (Ouessant compris)
+const MAP_DEFAULT_BOUNDS = [[46.12, -5.10], [48.78, -1.10]]; // de La Rochelle à Morlaix (Ouessant compris)
+/* fonds de carte (Esri ArcGIS Online, accès libre avec mention de la source) : image de fond + noms des lieux */
+const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services/';
+const MAP_STYLES = {
+  satellite:{label:'Satellite', base:ESRI+'World_Imagery/MapServer/tile/{z}/{y}/{x}', ref:ESRI+'Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', native:18,
+    attribution:'Imagerie © Esri — Esri, Maxar, Earthstar Geographics, GIS User Community'},
+  clair:{label:'Clair', base:ESRI+'Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', ref:ESRI+'Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}', native:16,
+    attribution:'Fond © Esri — Esri, HERE, Garmin'},
+  sombre:{label:'Sombre', base:ESRI+'Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', ref:ESRI+'Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}', native:16,
+    attribution:'Fond © Esri — Esri, HERE, Garmin'},
+};
+/* fond choisi sur cet appareil (satellite par défaut) */
+function mapStyle(){ const s = prefStore.getItem('sw_map_style'); return MAP_STYLES[s] ? s : 'satellite'; }
 const DEFAULT_MMSI = {'quehan':'227981280', 'men-du':'228151010'};
 /* positions approchées des ports (modifiables dans « Ports… ») */
 const DEFAULT_MAP_PORTS = [
@@ -7477,13 +7494,11 @@ let leafletLib = null;
 function loadLeaflet(){
   if(window.L && window.L.map) return Promise.resolve(window.L);
   if(TEST_MODE || !isOnline()) return Promise.reject(new Error('hors ligne'));
-  if(!leafletLib) leafletLib = new Promise((resolve, reject)=>{
-    document.head.appendChild(el('link',{rel:'stylesheet', href:'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css'}));
-    const s = el('script',{src:'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js', async:''});
-    s.onload = ()=>window.L ? resolve(window.L) : reject(new Error('Leaflet'));
-    s.onerror = ()=>{ leafletLib = null; reject(new Error('Leaflet')); };
-    document.head.appendChild(s);
-  });
+  // feuille de style et script : la carte n'est créée qu'une fois les deux chargés (sinon taille fausse)
+  if(!leafletLib) leafletLib = Promise.all([
+    new Promise((resolve, reject)=>{ const l = el('link',{rel:'stylesheet', href:'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css'}); l.onload = resolve; l.onerror = reject; document.head.appendChild(l); }),
+    new Promise((resolve, reject)=>{ const s = el('script',{src:'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js', async:''}); s.onload = ()=>window.L ? resolve() : reject(new Error('Leaflet')); s.onerror = reject; document.head.appendChild(s); }),
+  ]).then(()=>window.L).catch(e=>{ leafletLib = null; throw e; });
   return leafletLib;
 }
 /* clic sur la carte : point de passage (tracé d'une ligne) ou nouveau port */
@@ -7495,9 +7510,10 @@ function fleetMapClick(m, lat, lng){
 function drawLeafletMap(box, m){
   const L = window.L;
   box.innerHTML = '';
-  const map = L.map(box, {zoomSnap:0.5, worldCopyJump:false});
-  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:18, attribution:'© contributeurs OpenStreetMap'}).addTo(map);
-  L.tileLayer('https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png', {maxZoom:18, attribution:'balisage © OpenSeaMap'}).addTo(map);
+  const map = L.map(box, {zoomSnap:1, worldCopyJump:false}); // zoom entier : un zoom fractionnaire laisse un raccord visible entre tuiles
+  const st = MAP_STYLES[mapStyle()];
+  L.tileLayer(st.base, {maxZoom:18, maxNativeZoom:st.native, attribution:st.attribution}).addTo(map);
+  L.tileLayer(st.ref, {maxZoom:18, maxNativeZoom:st.native}).addTo(map);
   if(m.view) map.setView(m.view.c, m.view.z); else map.fitBounds(MAP_DEFAULT_BOUNDS);
   map.on('click', e=>fleetMapClick(m, e.latlng.lat, e.latlng.lng));
   const d = fleetMapData(m);
@@ -7515,9 +7531,10 @@ function drawLeafletMap(box, m){
   d.markers.forEach(k=>L.marker(k.at, {icon:L.divIcon({className:'map-vessel', html:'<span style="--c:'+(vesselColor(k.v)||'#2C6BA0')+'">'+esc(vesselName(k.v))+'</span>', iconSize:null})})
     .bindTooltip(vesselName(k.v)+' — prévu le '+fmtDate(m.date)+' : '+k.where).addTo(map));
   // taille définitive connue après l'affichage : recadrer La Rochelle → Morlaix, puis retenir la vue choisie
+  const size0 = map.getSize();
   setTimeout(()=>{
     map.invalidateSize();
-    if(!m.view) map.fitBounds(MAP_DEFAULT_BOUNDS);
+    if(!m.view && !map.getSize().equals(size0)) map.fitBounds(MAP_DEFAULT_BOUNDS);
     map.on('moveend', ()=>{ const c = map.getCenter(); m.view = {c:[c.lat, c.lng], z:map.getZoom()}; });
   }, 50);
 }
@@ -7558,7 +7575,11 @@ function viewCarte(slot){
     el('input',{type:'date', class:'select', 'aria-label':'Jour affiché', 'data-fk':'carte-date', value:m.date, onchange:e=>{ if(e.target.value){ m.date = e.target.value; renderContent(); } }}),
     el('button',{class:'btn btn-ghost btn-sm', type:'button', 'aria-label':'Jour suivant', onclick:()=>shift(1)}, '→'),
     el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>{ m.date = todayISO(); renderContent(); }}, 'Aujourd’hui'),
-    vesSel, el('div',{style:'flex:1;'}),
+    vesSel,
+    el('div',{class:'segmented', role:'group', 'aria-label':'Fond de carte'},
+      ...Object.entries(MAP_STYLES).map(([k, s])=>el('button',{type:'button', class:'seg'+(mapStyle()===k ? ' active' : ''), 'aria-pressed':String(mapStyle()===k), 'data-fk':'carte-fond-'+k,
+        onclick:()=>{ prefStore.setItem('sw_map_style', k); renderContent(); }}, s.label))),
+    el('div',{style:'flex:1;'}),
     el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'carte-vue-defaut', onclick:()=>{ m.view = null; renderContent(); }}, 'La Rochelle → Morlaix'),
     canConfigure() ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'carte-ports', onclick:openPortsModal}, 'Ports…') : null,
     canConfigure() ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'carte-navires', onclick:openVesselInfoModal}, 'MMSI et ports d’attache…') : null,
@@ -7574,7 +7595,7 @@ function viewCarte(slot){
     slot.appendChild(el('div',{class:'banner', role:'status'}, el('div',{style:'flex:1;'}, 'Cliquez sur la carte à l’emplacement du nouveau port.'),
       el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>{ m.placePort = false; renderContent(); }}, 'Annuler')));
   }
-  const mapBox = el('div',{class:'fleet-map'+(m.draw || m.placePort ? ' map-picking' : ''), 'data-fk':'carte'});
+  const mapBox = el('div',{class:'fleet-map map-'+mapStyle()+(m.draw || m.placePort ? ' map-picking' : ''), 'data-fk':'carte'});
   const side = el('div',{class:'fleet-side'});
   slot.appendChild(el('div',{class:'fleet-layout'}, el('div',{class:'card fleet-map-card'}, mapBox), side));
   loadLeaflet().then(()=>{ if(mapBox.isConnected) drawLeafletMap(mapBox, m); }).catch(()=>drawSvgMap(mapBox, m));
@@ -11091,7 +11112,7 @@ function exportSpecPdf(spec){ printSheet(buildExportSheet(spec)); }
    APP_BUILD est inscrit à la publication (tools/preparer-deploiement.ps1) :
    « aaaammjj-hhmm-empreinte ». Fichier ouvert en local : version non numérotée.
    La recherche de mise à jour lit version.json sur le site publié. */
-const APP_BUILD = '20261024-1400-e9b8479c3089';
+const APP_BUILD = '20261024-1413-cfb717c9078f';
 function appBuildInfo(build){
   const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(?:-(\w+))?/.exec(build||'');
   return m ? {build, date:m[1]+'-'+m[2]+'-'+m[3], time:m[4]+':'+m[5], label:m[3]+'/'+m[2]+'/'+m[1]+' à '+m[4]+'h'+m[5]} : null;
@@ -14955,6 +14976,15 @@ autotest('Carte des navires', 'ports, MMSI et liens MarineTraffic, lignes tracé
   state._map = null; render(); state.route = '#/carte'; renderContent();
   expect.ok($('#content-slot .map-schema'), 'schéma affiché sans réseau');
   expect.ok($('#content-slot .map-schema').textContent.includes('Morlaix'), 'ports nommés');
+  // fonds : satellite (par défaut), clair, sombre — pas d'OpenStreetMap
+  prefStore.removeItem('sw_map_style'); renderContent();
+  expect.ok(mapStyle()==='satellite' && $('#content-slot [data-fk=carte-fond-satellite]').classList.contains('active'), 'satellite par défaut');
+  $('#content-slot [data-fk=carte-fond-sombre]').click();
+  expect.ok(prefStore.getItem('sw_map_style')==='sombre' && $('#content-slot [data-fk=carte]').classList.contains('map-sombre'), 'vue sombre retenue');
+  $('#content-slot [data-fk=carte-fond-clair]').click();
+  expect.equal(mapStyle(), 'clair');
+  expect.ok(Object.values(MAP_STYLES).every(s=>!/openstreetmap|openseamap/i.test(s.base+s.ref)), 'aucun fond OpenStreetMap');
+  prefStore.removeItem('sw_map_style');
   expect.equal($('#content-slot [data-fk=marinetraffic-quehan]').href, 'https://www.marinetraffic.com/en/ais/details/ships/mmsi:227981280');
   expect.ok($('#content-slot [data-fk=marinetraffic-men-du]').href.endsWith('mmsi:228151010') && !$('#content-slot [data-fk=marinetraffic-viga]'), 'liens par MMSI');
   // port d'attache et ligne
@@ -15287,7 +15317,7 @@ autotest('Paramètres', 'export Excel (.xlsx) relu par le lecteur de classeurs, 
 });
 autotest('Paramètres', 'version affichée avec sa date, recherche de mise à jour (version publiée plus récente)', async ()=>{
   expect.ok(appBuildInfo('20261024-1203-ff54f95a493b').label==='24/10/2026 à 12h03', 'date lue dans la version');
-  expect.equal(appBuildInfo('20261024-1400-e9b8479c3089'), null, 'fichier non publié');
+  expect.equal(appBuildInfo('20261024-1413-cfb717c9078f'), null, 'fichier non publié');
   render(); state.route = '#/parametres'; renderContent();
   const card = $('#content-slot [data-fk=carte-version]');
   expect.ok(card && $('[data-fk=version-app]', card).textContent.length>0, 'carte Version et mises à jour');
