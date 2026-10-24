@@ -2358,7 +2358,7 @@ function locationCard(){
   if(state.driveFile){
     const link = parseHttpsUrl(state.driveFile.webViewLink);
     row(isRelay() ? 'Accès aux données' : 'Droits sur Google Drive', state.driveReadOnly ? 'Lecture seule' : 'Modification',
-      isRelay() ? 'Par lien d’invitation personnel (relais Seaway) : il se révoque dans « Profils & accès › Liens actifs ».' : 'Les droits se gèrent dans Google Drive, par le partage du dossier « '+(state.driveFile.folderName||'Seaway GMAO')+' ».',
+      isRelay() ? 'Par lien d’invitation personnel (relais Seaway) : il se révoque dans « Profils & accès › Utilisateurs et liens ».' : 'Les droits se gèrent dans Google Drive, par le partage du dossier « '+(state.driveFile.folderName||'Seaway GMAO')+' ».',
       el('div',{style:'display:flex;gap:6px;flex-wrap:wrap;'},
         state.driveFile.folderId ? el('a',{href:'https://drive.google.com/drive/folders/'+encodeURIComponent(state.driveFile.folderId), target:'_blank', rel:'noopener noreferrer', class:'btn btn-ghost btn-sm', 'data-fk':'dossier-drive'}, el('span',{html:iconExternal(14)}), 'Ouvrir le dossier dans Drive') : null,
         link ? el('a',{href:link.href, target:'_blank', rel:'noopener noreferrer', class:'btn btn-ghost btn-sm'}, el('span',{html:iconExternal(14)}), 'Ouvrir le fichier') : null));
@@ -2527,6 +2527,17 @@ function openJoinModal(){
     validate: d=>parseInviteLink(d.lien) ? null : 'Ce texte ne contient pas de lien d’invitation Seaway.',
     onSubmit: async d=>{ await relayJoin(parseInviteLink(d.lien)); }});
 }
+/* niveau, profil et lecture seule du lien, renvoyés par le relais à chaque vérification :
+   un changement fait par l'administrateur s'applique sans rouvrir le lien */
+function relayApplyUser(j){
+  if(!isRelay() || !j || !j.user) return;
+  const r = state.driveFile.relay, u = j.user, canEdit = j.canEdit!==false;
+  if(r.name===(u.name||'') && r.role===(u.role||'') && r.profileId===(u.profileId||'') && r.admin===!!u.admin && (state.driveFile.canEdit!==false)===canEdit) return;
+  Object.assign(r, {name:u.name||'', role:u.role||'', profileId:u.profileId||'', admin:!!u.admin});
+  state.driveFile.canEdit = canEdit; state.driveReadOnly = !canEdit;
+  driveSaveConnection(); applyIdentity();
+  setTimeout(render, 0);
+}
 /* le profil créé par la personne connectée avec le relais est relié à son lien */
 async function relayBindProfile(profileId, name){
   if(!isRelay()) return;
@@ -2583,7 +2594,7 @@ async function inviteProfile(u){
     const res = await relayCall('invite', {name:profileFullName(u), role:u.role||'equipage', profileId:u.id, readOnly:false});
     logHistory('users', u.id, profileFullName(u), 'invitation créée', null, 'lien d’accès aux données (réf. '+res.ref+')');
     showLinkModal('Lien d’invitation — '+profileFullName(u), res.link,
-      'Lien personnel de '+profileFullName(u)+' ('+roleDef(u.role).label+') : il donne accès à l’application et aux données de l’équipe, sans compte Google. À envoyer à cette seule personne ; révocable dans « Liens actifs ».',
+      'Lien personnel de '+profileFullName(u)+' ('+roleDef(u.role).label+') : il donne accès à l’application et aux données de l’équipe, sans compte Google. À envoyer à cette seule personne ; révocable dans « Utilisateurs et liens ».',
       'Bonjour, voici ton accès à Seaway GMAO (à ouvrir sur ton téléphone) :');
   }catch(e){ toast(e.message); }
 }
@@ -2596,19 +2607,56 @@ async function openActiveLinksModal(){
     if(!list.length) box.appendChild(el('div',{class:'hint'}, 'Aucun lien actif.'));
     list.forEach(t=>{
       const p = t.profileId && state.users.find(u=>u.id===t.profileId);
+      const role = t.admin ? 'admin' : t.role;
       box.appendChild(el('div',{class:'settings-row'},
         el('div',{}, el('div',{class:'lbl'}, (p ? profileFullName(p) : t.name || 'Sans nom')+(t.self ? ' (vous)' : '')),
-          el('div',{class:'desc'}, [t.admin ? 'Lien administrateur' : roleDef(p ? p.role : t.role).label, t.readOnly ? 'lecture seule' : '', t.created ? 'créé le '+fmtDateTime(t.created) : '', 'réf. '+t.ref].filter(Boolean).join(' · '))),
-        t.admin ? el('span',{class:'hint', style:'margin:0;'}, 'se change dans le script') :
+          el('div',{class:'desc'}, [t.admin ? 'Lien administrateur' : roleDef(role).label, t.readOnly ? 'lecture seule' : '',
+            p ? '' : (t.profileId ? 'profil supprimé' : 'aucun profil relié'), p && p.role!==role ? 'profil indiqué « '+roleDef(p.role).label+' »' : '',
+            t.created ? 'créé le '+fmtDateTime(t.created) : '', 'réf. '+t.ref].filter(Boolean).join(' · '))),
+        el('div',{style:'display:flex;gap:8px;align-items:center;flex-wrap:wrap;'},
+          el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'modifier-lien-'+t.ref, onclick:()=>openLinkAccessModal(t, ()=>draw())}, 'Modifier'),
+          t.admin ? el('span',{class:'hint', style:'margin:0;'}, 'se change dans le script') :
           el('button',{class:'btn-danger-text', type:'button', 'data-fk':'revoquer-'+t.ref, onclick:()=>confirmModal('Révoquer le lien de '+(p ? profileFullName(p) : t.name || 'cette personne')+' ? L’application de cette personne ne pourra plus lire ni envoyer de données.', async()=>{
             await relayCall('revoke', {ref:t.ref});
             logHistory('users', t.profileId||null, p ? profileFullName(p) : t.name || 'lien', 'invitation révoquée', null, 'réf. '+t.ref);
             list = list.filter(x=>x!==t); draw(); toast('Lien révoqué');
-          })}, 'Révoquer')));
+          })}, 'Révoquer'))));
     });
   };
   draw();
-  openModal({title:'Liens d’invitation actifs', infoOnly:true, wide:true, body:box});
+  openModal({title:'Utilisateurs et liens d’accès', infoOnly:true, wide:true, body:el('div',{},
+    el('div',{class:'hint', style:'margin:0 0 10px;'}, 'Chaque lien est un utilisateur : son niveau d’accès est gardé par le relais et s’applique sur son appareil à la vérification suivante (2 minutes au plus).'), box)});
+}
+/* gestion d'un utilisateur (lien) : nom, niveau d'accès, profil relié, lecture seule */
+function openLinkAccessModal(t, done){
+  const p0 = t.profileId && state.users.find(u=>u.id===t.profileId);
+  const body = el('div',{},
+    field('Nom','nom','text', null, p0 ? profileFullName(p0) : t.name||''),
+    fieldRow(
+      field('Niveau d’accès','role','select', ROLES.map(r=>({v:r.key, l:r.label})), t.admin ? 'admin' : (t.role||'equipage')),
+      field('Données','acces','select', [{v:'ecriture', l:'Consultation et saisie'}, {v:'lecture', l:'Lecture seule'}], t.readOnly ? 'lecture' : 'ecriture')),
+    field('Profil relié','profileId','select', [{v:'', l:'—'}, ...state.users.filter(profileActive).slice().sort((a,b)=>profileFullName(a).localeCompare(profileFullName(b),'fr')).map(u=>({v:u.id, l:profileFullName(u)}))], t.profileId||'', 'nom inscrit dans l’historique ; le niveau du profil est aligné sur celui du lien'));
+  if(t.admin) ['role','acces'].forEach(n=>{ $('[name='+n+']', body).disabled = true; });
+  openModal({title:'Accès de '+(p0 ? profileFullName(p0) : t.name || 'cet utilisateur'), body, submitLabel:'Enregistrer',
+    validate: d=>{
+      if(t.self && !t.admin && d.role!=='admin') return 'Vous retireriez vos propres droits d’administrateur : faites-le depuis le lien administrateur.';
+      return null;
+    },
+    onSubmit: async d=>{
+      const upd = {ref:t.ref, name:String(d.nom||'').trim(), profileId:d.profileId||''};
+      if(!t.admin){ upd.role = d.role; upd.readOnly = d.acces==='lecture'; }
+      await relayCall('update', upd); // en cas d'échec, la fenêtre reste ouverte
+      const before = roleDef(t.admin ? 'admin' : t.role).label+(t.readOnly ? ', lecture seule' : '');
+      Object.assign(t, {name:upd.name, profileId:upd.profileId}, t.admin ? {} : {role:upd.role, readOnly:upd.readOnly});
+      const p = upd.profileId && state.users.find(u=>u.id===upd.profileId);
+      const role = t.admin ? 'admin' : t.role;
+      if(p && p.role!==role) updateDoc('users','users', p.id, {role}); // le profil affiche le même niveau que le lien
+      logHistory('users', p ? p.id : null, p ? profileFullName(p) : upd.name || 'lien', 'accès modifié', null,
+        before+' → '+roleDef(role).label+(t.readOnly ? ', lecture seule' : '')+' (réf. '+t.ref+')');
+      if(t.self) relayApplyUser({user:{name:upd.name, role, profileId:upd.profileId, admin:!!t.admin || role==='admin'}, canEdit:!t.readOnly});
+      done && done();
+      toast('Accès mis à jour');
+    }});
 }
 
 function driveClientId(){ return (state.appConfig && state.appConfig.googleClientId) || prefStore.getItem('sw_google_client_id') || ''; }
@@ -2670,7 +2718,7 @@ async function driveReq(method, url, opts){
 }
 const driveQ = s=>encodeURIComponent(s);
 function driveMeta(id){
-  if(isRelay()) return relayCall('meta').then(j=>{ state.driveFile._metaRev = j.rev; return {id, headRevisionId:'r'+j.rev, capabilities:{canEdit: state.driveFile.canEdit!==false}}; });
+  if(isRelay()) return relayCall('meta').then(j=>{ state.driveFile._metaRev = j.rev; relayApplyUser(j); return {id, headRevisionId:'r'+j.rev, capabilities:{canEdit: state.driveFile.canEdit!==false}}; });
   return driveReq('GET', DRIVE_URL+'/files/'+id+'?supportsAllDrives=true&fields='+driveQ('id,name,headRevisionId,modifiedTime,parents,webViewLink,capabilities(canEdit),lastModifyingUser(displayName)'));
 }
 function driveDownload(id){ if(isRelay()) return relayCall('get').then(j=>{ state.driveFile._metaRev = j.rev; return j.content; }); return driveReq('GET', DRIVE_URL+'/files/'+id+'?alt=media&supportsAllDrives=true', {as:'text'}); }
@@ -6401,12 +6449,11 @@ function currentProfile(){
   return (id && state.users.find(u=>u.id===id && profileActive(u))) || null;
 }
 function currentRole(){
+  // lien d'invitation : le niveau est celui du lien, gardé par le relais (seul l'administrateur le change)
+  if(typeof isRelay==='function' && isRelay()) return state.driveFile.relay.admin ? 'admin' : (ROLES.some(r=>r.key===state.driveFile.relay.role) ? state.driveFile.relay.role : 'equipage');
   if(!hasAdminProfile()) return 'admin';
   const p = currentProfile();
-  if(p) return p.role;
-  // lien d'invitation sans profil relié : niveau donné par le lien
-  if(typeof isRelay==='function' && isRelay()) return state.driveFile.relay.admin ? 'admin' : (ROLES.some(r=>r.key===state.driveFile.relay.role) ? state.driveFile.relay.role : 'equipage');
-  return 'equipage';
+  return p ? p.role : 'equipage';
 }
 /* nom inscrit dans l'historique et sur les fiches : celui du profil s'il est reconnu */
 function applyIdentity(){
@@ -6457,7 +6504,7 @@ function viewProfils(slot){
       : 'Pour donner l’accès aux données par un simple lien (sans compte Google ni validation Google), installez le relais Seaway (relais/LISEZ-MOI.txt), puis ouvrez le lien administrateur.'),
     el('div',{style:'display:flex;gap:8px;flex-wrap:wrap;'},
       el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'lien-application', onclick:openAppLinkModal}, 'Lien et QR code de l’application'),
-      relayAdmin ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'liens-actifs', onclick:openActiveLinksModal}, 'Liens actifs…') : null,
+      relayAdmin ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'liens-actifs', onclick:openActiveLinksModal}, 'Utilisateurs et liens…') : null,
       el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'rejoindre-lien', onclick:openJoinModal}, 'Rejoindre avec un lien…'))));
   slot.appendChild(el('div',{class:'toolbar'}, kindSwitch,
     canManageProfiles() ? el('button',{class:'btn btn-accent', 'data-fk':'ajouter-profil', onclick:()=>openProfileModal(null, {type: kind || 'armement'})}, el('span',{html:iconPlus()}), 'Ajouter un profil') : el('span',{style:'display:none'})));
@@ -6479,7 +6526,9 @@ function viewProfils(slot){
   }
   slot.appendChild(el('div',{class:'card settings-card'}, el('h3',{},'Niveaux d’accès'),
     ...ROLES.map(r=>el('div',{class:'settings-row'}, el('div',{}, el('div',{class:'lbl'}, r.label), el('div',{class:'desc'}, r.desc)))),
-    el('div',{class:'hint', style:'margin-top:8px;'}, 'Contrôle d’interface, pas une sécurité serveur : pour l’équipage, partagez en plus le dossier Google Drive en « Lecteur » si personne à bord ne doit pouvoir modifier le fichier hors de l’application.')));
+    el('div',{class:'hint', style:'margin-top:8px;'}, viaRelay
+      ? 'Avec les liens d’invitation, le niveau d’accès est attribué au lien et gardé par le relais : seul un administrateur le change (« Utilisateurs et liens »). La lecture seule est appliquée par le relais lui-même.'
+      : 'Contrôle d’interface, pas une sécurité serveur : pour l’équipage, partagez en plus le dossier Google Drive en « Lecteur » si personne à bord ne doit pouvoir modifier le fichier hors de l’application.')));
 }
 
 function openProfileModal(u, prefill){
@@ -6535,9 +6584,13 @@ function openProfileModal(u, prefill){
       data.email = String(data.email||'').trim();
       const wasBootstrap = !hasAdminProfile();
       if(isEdit){
+        const oldRole = u.role;
         updateDoc('users','users', u.id, data);
         logHistory('users', u.id, profileFullName(data), 'modifié', data.vessel||null,
           diffSummary(u, data, [['role','Niveau d’accès'],['fonction','Fonction'],['email','Adresse'],['actif','Actif']]));
+        // liens d'invitation reliés à ce profil : même niveau (c'est le relais qui fait foi)
+        if(admin && isRelay() && state.driveFile.relay.admin && oldRole!==data.role)
+          relayCall('update', {forProfile:u.id, role:data.role}).catch(e=>toast('Niveau du lien non modifié : '+e.message));
       }else{
         const id = addDoc('users','users', data);
         // premier administrateur créé sans Google : c'est la personne sur cet appareil
@@ -12802,7 +12855,7 @@ autotest('Interface', 'couleur du navire sélectionné : fond, bandeau, fenêtre
 /* faux relais en mémoire : mêmes actions et mêmes règles que relais/Code.gs */
 function useFakeRelay(){
   let n = 0;
-  const tok = ()=>(++n).toString(16).padStart(32, 'c');
+  const tok = ()=>((++n).toString(16)+'0a1b2c3d4e5f').padEnd(32, 'c'); // références (8 premiers caractères) distinctes
   const srv = {url:'https://script.google.com/macros/s/TEST/exec', rev:0, calls:[], tokens:{}, files:{}, archives:{},
     content:JSON.stringify({app:'seaway-gmao', version:1, revision:0, savedAt:'2026-10-01T00:00:00.000Z', savedBy:'Relais'})};
   srv.admin = tok(); srv.tokens[srv.admin] = {name:'Administrateur', role:'admin', admin:true};
@@ -12815,19 +12868,26 @@ function useFakeRelay(){
     srv.calls.push(q.action);
     if(!info) return ok({error:'lien invalide', code:401});
     const admin = !!info.admin || info.role==='admin';
+    const user = {name:info.name, role:admin ? 'admin' : info.role, profileId:info.profileId||'', admin, readOnly:!!info.readOnly};
     switch(q.action){
-      case 'ping': return ok({ok:true, rev:srv.rev, fileId:'data1', fileName:'seaway-gmao-data.json', folderName:'Seaway GMAO', canEdit:!info.readOnly,
-        user:{name:info.name, role:info.role, profileId:info.profileId||'', admin}});
-      case 'meta': return ok({rev:srv.rev});
+      case 'ping': return ok({ok:true, rev:srv.rev, fileId:'data1', fileName:'seaway-gmao-data.json', folderName:'Seaway GMAO', canEdit:!info.readOnly, user});
+      case 'meta': return ok({rev:srv.rev, canEdit:!info.readOnly, user});
       case 'get': return ok({rev:srv.rev, content:srv.content});
-      case 'put': if(String(q.expectedRev)!==String(srv.rev)) return ok({conflict:true, rev:srv.rev}); srv.content = q.content; srv.rev++; return ok({ok:true, rev:srv.rev});
+      case 'put': if(info.readOnly) return ok({error:'accès en lecture seule', code:403}); if(String(q.expectedRev)!==String(srv.rev)) return ok({conflict:true, rev:srv.rev}); srv.content = q.content; srv.rev++; return ok({ok:true, rev:srv.rev});
       case 'putAtt': { const id = 'fakeAttachmentId'+Object.keys(srv.files).length; srv.files[id] = {mime:q.mime, data:q.data}; return ok({id}); }
       case 'getAtt': return srv.files[q.id] ? ok(srv.files[q.id]) : ok({error:'fichier hors du dossier', code:403});
       case 'archive': srv.archives[q.name] = srv.archives[q.name] || q.content; return ok({ok:true});
-      case 'bind': info.profileId = q.profileId; return ok({ok:true});
+      case 'bind': if(info.profileId && !admin) return ok({error:'profil déjà relié', code:403}); info.profileId = q.profileId; return ok({ok:true});
+      case 'update': { if(!admin) return ok({error:'réservé à l’administrateur', code:403}); let n = 0;
+        Object.entries(srv.tokens).forEach(([t,o])=>{
+          if(q.ref ? !t.startsWith(q.ref) : o.profileId!==q.forProfile) return;
+          if(!o.admin){ if(q.role!==undefined) o.role = q.role; if(q.readOnly!==undefined) o.readOnly = !!q.readOnly; }
+          if(q.name!==undefined) o.name = q.name; if(q.profileId!==undefined) o.profileId = q.profileId; n++;
+        });
+        return ok({ok:true, updated:n}); }
       case 'invite': { if(!admin) return ok({error:'réservé à l’administrateur', code:403}); const t = tok();
         srv.tokens[t] = {name:q.name, role:q.role, profileId:q.profileId, created:'2026-10-23T10:00:00.000Z'}; return ok({token:t, ref:t.slice(0,8), link:srv.link(t)}); }
-      case 'list': return ok({tokens:Object.entries(srv.tokens).map(([t,o])=>({ref:t.slice(0,8), name:o.name, role:o.role, profileId:o.profileId||'', admin:!!o.admin, self:t===q.token}))});
+      case 'list': return ok({tokens:Object.entries(srv.tokens).map(([t,o])=>({ref:t.slice(0,8), name:o.name, role:o.role, profileId:o.profileId||'', admin:!!o.admin, readOnly:!!o.readOnly, self:t===q.token}))});
       case 'revoke': Object.keys(srv.tokens).forEach(t=>{ if(t.startsWith(q.ref) && !srv.tokens[t].admin) delete srv.tokens[t]; }); return ok({ok:true});
     }
     return ok({error:'action inconnue', code:400});
@@ -12881,6 +12941,41 @@ autotest('Relais', 'invitation par lien depuis Profils & accès : niveau du prof
   let err = null;
   try{ await relayCall('meta', {}, {url:srv.url, token:t}); }catch(e){ err = e; }
   expect.ok(err && err.message.includes('révoqué'), 'lien révoqué refusé : '+(err && err.message));
+  state.route = '#/autotest';
+});
+autotest('Relais', 'gestion des utilisateurs : le niveau du lien fait foi, modifié par l’administrateur, appliqué à la vérification suivante', async ()=>{
+  const srv = useFakeRelay();
+  await relayJoin({url:srv.url, token:srv.admin});
+  const adm = addDoc('users','users',{nom:'Admin', role:'admin'}); state.driveFile.relay.profileId = adm; srv.tokens[srv.admin].profileId = adm;
+  const cap = addDoc('users','users',{nom:'Le Goff', prenom:'Jean', role:'capitaine'});
+  const t = (await relayCall('invite', {name:'Jean Le Goff', role:'capitaine', profileId:cap})).token;
+  const asJean = ()=>Object.assign(state.driveFile.relay, {token:t, admin:false, role:'capitaine', profileId:cap});
+  const asAdmin = ()=>Object.assign(state.driveFile.relay, {token:srv.admin, admin:true, role:'admin', profileId:adm});
+  // sur le téléphone de Jean : modifier son profil dans les données ne change pas son niveau
+  asJean();
+  state.users.find(u=>u.id===cap).role = 'admin';
+  expect.equal(currentRole(), 'capitaine', 'niveau du lien, pas celui du profil');
+  state.users.find(u=>u.id===cap).role = 'capitaine';
+  let err = null; try{ await relayCall('update', {ref:t.slice(0,8), role:'admin'}); }catch(e){ err = e; }
+  expect.ok(err && srv.tokens[t].role==='capitaine', 'un capitaine ne change pas son niveau');
+  // l'administrateur passe Jean en « Service technique », lecture seule
+  asAdmin();
+  render(); state.route = '#/profils'; renderContent();
+  $('#content-slot [data-fk=liens-actifs]').click(); await tick(30);
+  $('.modal [data-fk="modifier-lien-'+t.slice(0,8)+'"]').click(); await tick(10);
+  fillModal({role:'technique', acces:'lecture'}); confirmTopModal(); await tick(30);
+  expect.ok(srv.tokens[t].role==='technique' && srv.tokens[t].readOnly===true, 'lien modifié sur le relais');
+  expect.equal(state.users.find(u=>u.id===cap).role, 'technique', 'profil aligné sur le lien');
+  closeAllModals();
+  // le téléphone de Jean le voit à la vérification suivante
+  asJean();
+  await driveMeta('data1'); await tick(10);
+  expect.ok(currentRole()==='technique' && state.driveReadOnly===true, 'nouveau niveau et lecture seule appliqués : '+currentRole());
+  // changer le niveau dans la fiche profil met aussi à jour le lien
+  asAdmin(); state.driveFile.canEdit = true; state.driveReadOnly = false;
+  openProfileModal(state.users.find(u=>u.id===cap));
+  fillModal({role:'equipage'}); confirmTopModal(); await tick(30);
+  expect.equal(srv.tokens[t].role, 'equipage', 'lien suivi depuis la fiche profil');
   state.route = '#/autotest';
 });
 autotest('Relais', 'synchronisation : écriture refusée si un collègue a écrit entre-temps, refusion sans perte', async ()=>{
