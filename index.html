@@ -273,7 +273,7 @@ tr.ord-annule>td{color:var(--text-soft);}
 .fleet-layout{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:14px;align-items:start;}
 @media (max-width:1000px){ .fleet-layout{grid-template-columns:1fr;} }
 .fleet-map-card{padding:0;overflow:hidden;}
-.fleet-map{height:min(78vh, 760px);min-height:420px;background:#cfe3f1;position:relative;}
+.fleet-map{height:min(78vh, 760px);min-height:420px;background:#cfe3f1;position:relative;isolation:isolate;z-index:0;} /* les calques Leaflet (z-index 400 à 1000) restent sous les fenêtres */
 .fleet-map.map-satellite{background:#0b2233;} .fleet-map.map-sombre{background:#1e2226;} .fleet-map.map-clair{background:#e6e6e3;}
 .map-sombre .map-schema .map-sea, .map-satellite .map-schema .map-sea{fill:#16283a;}
 .map-sombre .map-schema .map-port-label, .map-satellite .map-schema .map-port-label{fill:#e8eef3;}
@@ -297,6 +297,8 @@ tr.ord-annule>td{color:var(--text-soft);}
 .map-vessel span{display:inline-block;transform:translate(-50%,-120%);background:var(--c);color:#fff;font:700 12px system-ui, sans-serif;padding:3px 9px;border-radius:12px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.35);}
 .leaflet-tooltip.map-home-label{font-weight:700;}
 .pj-route{font-size:11px;color:var(--link-text);margin-top:2px;}
+.pn-table th.pn-vessel{box-shadow:inset 4px 0 0 var(--c, transparent);padding-left:10px;}
+.pn-table td.pj-ops{min-width:120px;}
 .ais-frame{width:100%;height:460px;border:0;border-radius:8px;background:#e8eef3;}
 
 .fuel-tanks th[scope=row]{font-weight:600;white-space:nowrap;}
@@ -7581,6 +7583,8 @@ function viewCarte(slot){
         onclick:()=>{ prefStore.setItem('sw_map_style', k); renderContent(); }}, s.label))),
     el('div',{style:'flex:1;'}),
     el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'carte-vue-defaut', onclick:()=>{ m.view = null; renderContent(); }}, 'La Rochelle → Morlaix'),
+    el('a',{class:'btn btn-ghost', href:'#/planning', 'data-fk':'carte-planning', onclick:()=>{ state._plan = state._plan || {start: mondayOf(addDays(todayISO(), -7)), weeks: 8, vessel:''}; state._plan.view = 'navires'; state._plan.dstart = m.date; }},
+      el('span',{html:iconPlanning()}), 'Planning des navires'),
     canConfigure() ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'carte-ports', onclick:openPortsModal}, 'Ports…') : null,
     canConfigure() ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'carte-navires', onclick:openVesselInfoModal}, 'MMSI et ports d’attache…') : null,
     canEdit() ? el('button',{class:'btn btn-accent', type:'button', 'data-fk':'carte-nouvelle-ligne', onclick:()=>openRouteModal(null, {vessel:m.vessel||state.activeVessel})}, el('span',{html:iconPlus()}), 'Nouvelle ligne') : null));
@@ -7613,7 +7617,9 @@ function viewCarte(slot){
         el('a',{class:'btn btn-ghost btn-sm', href:vesselFinderUrl(info.mmsi), target:'_blank', rel:'noopener noreferrer'}, el('span',{html:iconExternal()}), 'VesselFinder'),
         el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'ais-'+v, onclick:()=>openLiveAisModal(v)}, 'Position en direct')) : null,
       el('div',{class:'desc'}, 'Port d’attache : '+(home ? home.name : '—')),
-      el('div',{class:'desc'}, 'Prévu le '+fmtDate(m.date)+' : '+(t.plan ? [t.plan.position, t.plan.operations].filter(Boolean).join(' — ') || '—' : 'non renseigné au planning')),
+      el('div',{class:'desc'}, el('button',{type:'button', class:'link-btn', 'data-fk':'carte-jour-'+v, title:'Modifier l’organisation de la journée (planning des navires)', onclick:()=>openVesselPlanModal(v, m.date)},
+        'Prévu le '+fmtDate(m.date)+' : '+(t.plan ? [t.plan.position, t.plan.operations].filter(Boolean).join(' — ') || '—' : 'non renseigné au planning'))),
+
       routes.length && canEdit() ? (()=>{
         const sel = el('select',{class:'select', 'aria-label':'Ligne du '+fmtDate(m.date)+' — '+vesselName(v), 'data-fk':'ligne-du-jour-'+v, onchange:e=>{
           const rid = e.target.value, r = mapRoutes().find(x=>x.id===rid), vp = vesselPlanAt(v, m.date);
@@ -9325,7 +9331,51 @@ function viewPlanningDaily(slot, p){
     el('div',{class:'pj-scroll'}, el('table',{class:'pj-table'+(span==='mois' ? ' pj-compact' : '')}, el('thead',{}, head), tbody, el('tbody',{class:'pj-vessels'}, el('tr',{}, el('th',{colspan:String(n+2), class:'pj-sep'}, 'Organisation de la journée : position prévue et opérations')), ...vbody.childNodes))),
     el('div',{class:'plan-legend'}, ...crewPlanCodes().map(d=>el('span',{}, el('i',{class:'pj-legend', style:'--c:'+crewPlanColor(d.c)}, d.c), d.l)))));
 }
+/* planning des navires : un navire par ligne, un jour par colonne — position prévue,
+   ligne de la carte, opérations, arrêts techniques et effectif à bord (planning des marins) */
+function viewPlanningVessels(slot, p){
+  const span = p.span || 'semaine';
+  const start = span==='mois' ? p.dstart.slice(0,8)+'01' : mondayOf(p.dstart);
+  const n = span==='mois' ? monthDays(start.slice(0,7)).length : span==='2semaines' ? 14 : 7;
+  const days = Array.from({length:n}, (_,i)=>addDays(start, i));
+  const today = todayISO();
+  const shift = k=>{ p.dstart = span==='mois' ? (()=>{ const [y,m] = start.split('-').map(Number); return localISO(new Date(y, m-1+k, 1)); })() : addDays(start, k*n); renderContent(); };
+  const spanSel = el('select',{class:'select', 'aria-label':'Période', 'data-fk':'pn-periode', onchange:e=>{ p.span = e.target.value; renderContent(); }},
+    ...[['semaine','Semaine'],['2semaines','2 semaines'],['mois','Mois']].map(([v,l])=>el('option',{value:v}, l)));
+  spanSel.value = span;
+  slot.appendChild(el('div',{class:'toolbar'},
+    el('button',{class:'btn btn-ghost btn-sm', type:'button', 'aria-label':'Période précédente', onclick:()=>shift(-1)}, '←'),
+    el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>{ p.dstart = today; renderContent(); }}, 'Aujourd’hui'),
+    el('button',{class:'btn btn-ghost btn-sm', type:'button', 'aria-label':'Période suivante', onclick:()=>shift(1)}, '→'),
+    el('div',{class:'section-sub', style:'font-weight:600;'}, span==='mois' ? MONTHS_FR[Number(start.slice(5,7))-1]+' '+start.slice(0,4) : 'Semaine '+isoWeek(start)+(n>7 ? '–'+isoWeek(days[n-1]) : '')+' · du '+fmtDate(start)+' au '+fmtDate(days[n-1])),
+    spanSel, el('div',{style:'flex:1;'}),
+    el('a',{class:'btn btn-ghost', href:'#/carte', 'data-fk':'pn-carte', onclick:()=>{ state._map = state._map || {date:today, vessel:''}; state._map.date = days.includes(today) ? today : start; }}, el('span',{html:iconMap()}), 'Voir sur la carte')));
+  slot.appendChild(el('div',{class:'hint', style:'margin:0 0 10px;'}, 'Cliquez une case pour saisir la position prévue (ligne, port, chantier), la ligne de la carte et les opérations de la journée. Le même contenu apparaît sous le planning journalier des marins et sur la carte des navires.'));
+  const head = el('tr',{}, el('th',{class:'pj-name'}, 'Navire'),
+    ...days.map(d=>{ const wd = new Date(d+'T12:00:00').getDay();
+      return el('th',{class:'pj-day'+(wd===0||wd===6||holidayName(d) ? ' pj-we' : '')+(d===today ? ' pj-today' : ''), title:holidayName(d)||''},
+        el('div',{}, WEEKDAYS_FR[wd].slice(0,3)+'.'), el('div',{style:'font-size:13px;'}, String(Number(d.slice(8))))); }));
+  const tbody = el('tbody',{});
+  [...VESSELS.map(v=>v.key), ''].forEach(v=>tbody.appendChild(el('tr',{style: v ? '--c:'+(vesselColor(v)||'#2C6BA0') : null},
+    el('th',{class:'pj-name pn-vessel', scope:'row'}, el('div',{style:'font-weight:600;'}, planVesselName(v)), el('div',{class:'hint', style:'margin:0;'}, v ? (mapPort(vesselInfo(v).homePort) ? 'port d’attache : '+mapPort(vesselInfo(v).homePort).name : 'position · opérations') : 'personnel à terre')),
+    ...days.map(d=>{
+      const r = vesselPlanAt(v, d);
+      const dock = v && state.drydocks.find(x=>x.vessel===v && x.statut!=='Annulé' && x.debut && x.debut<=d && (x.fin||x.debut)>=d);
+      const route = r && r.routeId ? mapRoutes().find(x=>x.id===r.routeId) : null;
+      const crew = v ? crewOnBoardPlan(v, d) : [];
+      return el('td',{class:'pj-ops'+(d===today ? ' pj-today' : '')},
+        el('button',{type:'button', class:'pj-opsbtn', 'data-fk':'pn-'+(v||'sedentaire')+'-'+d, 'aria-label':planVesselName(v)+', '+fmtDate(d)+(r ? ' : '+[r.position, r.operations].filter(Boolean).join(' — ') : ' : non renseigné'),
+          title: r ? [r.position, route ? 'Ligne : '+routeLabel(route) : '', r.operations].filter(Boolean).join('\n') : '', onclick:()=>openVesselPlanModal(v, d)},
+          dock ? el('div',{class:'pj-dock'}, 'Arrêt : '+(dock.titre||'')) : null,
+          r && r.position ? el('div',{class:'pj-pos'}, r.position) : null,
+          route && route.name!==r.position && routeLabel(route)!==r.position ? el('div',{class:'pj-route'}, '⛴ '+routeLabel(route)) : null,
+          r && r.operations ? el('div',{class:'pj-opstext'}, r.operations) : null,
+          crew.length ? el('div',{class:'hint', style:'margin:3px 0 0;font-size:11px;'}, crew.length+' à bord') : null));
+    }))));
+  slot.appendChild(el('div',{class:'card plan-card'}, el('div',{class:'pj-scroll'}, el('table',{class:'pj-table pn-table'+(span==='mois' ? ' pj-compact' : '')}, el('thead',{}, head), tbody))));
+}
 function openCrewPlanModal(m, date){
+
   const r = crewPlanAt(m.id, date);
   const body = el('div',{},
     field('Code','code','select', [{v:'',l:'— vide —'}, ...crewPlanCodes().map(d=>({v:d.c, l:d.c+' — '+d.l})), ...(r && r.code && !crewPlanCode(r.code) ? [{v:r.code, l:r.code}] : [])], r ? r.code : ''),
@@ -9696,9 +9746,10 @@ function viewPlanning(slot){
   const p = state._plan = state._plan || {start: mondayOf(addDays(todayISO(), -7)), weeks: 8, vessel:''};
   p.view = p.view || 'jour'; p.dstart = p.dstart || todayISO();
   slot.appendChild(el('div',{class:'segmented', role:'group', 'aria-label':'Vue du planning', style:'margin-bottom:12px;'},
-    ...[['jour','Planning journalier'],['croise','Tableau croisé'],['affect','Affectations']].map(([k,l])=>el('button',{type:'button', class:'seg'+(p.view===k?' active':''), 'aria-pressed':String(p.view===k), 'data-fk':'plan-vue-'+k,
+    ...[['jour','Planning journalier'],['navires','Planning des navires'],['croise','Tableau croisé'],['affect','Affectations']].map(([k,l])=>el('button',{type:'button', class:'seg'+(p.view===k?' active':''), 'aria-pressed':String(p.view===k), 'data-fk':'plan-vue-'+k,
       onclick:()=>{ p.view = k; renderContent(); }}, l))));
   if(p.view==='jour') return viewPlanningDaily(slot, p);
+  if(p.view==='navires') return viewPlanningVessels(slot, p);
   if(p.view==='croise') return viewPlanningPivot(slot, p);
   const days = p.weeks*7, start = p.start, end = addDays(start, days-1), today = todayISO();
   const move = n=>{ p.start = addDays(p.start, n*7); renderContent(); };
@@ -11112,7 +11163,7 @@ function exportSpecPdf(spec){ printSheet(buildExportSheet(spec)); }
    APP_BUILD est inscrit à la publication (tools/preparer-deploiement.ps1) :
    « aaaammjj-hhmm-empreinte ». Fichier ouvert en local : version non numérotée.
    La recherche de mise à jour lit version.json sur le site publié. */
-const APP_BUILD = '20261024-1413-cfb717c9078f';
+const APP_BUILD = '20261024-1417-9c69e2610f1a';
 function appBuildInfo(build){
   const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(?:-(\w+))?/.exec(build||'');
   return m ? {build, date:m[1]+'-'+m[2]+'-'+m[3], time:m[4]+':'+m[5], label:m[3]+'/'+m[2]+'/'+m[1]+' à '+m[4]+'h'+m[5]} : null;
@@ -15037,6 +15088,27 @@ autotest('Carte des navires', 'ports, MMSI et liens MarineTraffic, lignes tracé
   expect.ok($('.modal').textContent.includes('227981280') && $('.modal a[href*="mmsi:227981280"]'), 'fenêtre position en direct avec lien de secours');
   state.route = '#/autotest';
 });
+autotest('Carte des navires', 'les fenêtres s’ouvrent au-dessus de la carte ; planning des navires (vue dédiée, accès depuis la carte)', async ()=>{
+  const t = todayISO();
+  state._map = null; render(); state.route = '#/carte'; renderContent();
+  expect.equal(getComputedStyle($('#content-slot .fleet-map')).isolation, 'isolate', 'calques de la carte confinés sous les fenêtres');
+  $('#content-slot [data-fk=carte-jour-viga]').click();
+  expect.ok($('.modal [name=position]'), 'organisation du jour ouverte depuis la carte');
+  fillModal({position:'Port de Lorient', operations:'Chargement'}); confirmTopModal(); await tick(20);
+  expect.ok(vesselPlanAt('viga', t).position==='Port de Lorient' && (plannedPort('viga', t)||{}).id==='lorient', 'navire placé au port prévu');
+  expect.ok($('#content-slot .map-vessel-svg').textContent.includes('Viga'));
+  { const a = $('#content-slot [data-fk=carte-planning]'); a.addEventListener('click', e=>e.preventDefault(), {once:true}); a.click(); } // pas de changement d'adresse en autotest
+  expect.equal(state._plan.view, 'navires', 'lien vers le planning des navires');
+  state.route = '#/planning'; renderContent();
+  expect.ok($('#content-slot [data-fk=plan-vue-navires]').classList.contains('active'));
+  const cell = $('#content-slot [data-fk="pn-viga-'+t+'"]');
+  expect.ok(cell && cell.textContent.includes('Port de Lorient') && cell.textContent.includes('Chargement'), 'case du jour');
+  $('#content-slot [data-fk="pn-quehan-'+t+'"]').click();
+  fillModal({position:'Ligne Lorient – Groix'}); confirmTopModal(); await tick(20);
+  expect.ok($('#content-slot [data-fk="pn-quehan-'+t+'"]').textContent.includes('Ligne Lorient – Groix'), 'saisie depuis le planning des navires');
+  expect.ok($$('#content-slot .pn-table tbody tr').length===VESSELS.length+1, 'un navire par ligne, plus le personnel à terre');
+  state.route = '#/autotest';
+});
 /* ===================== exécution et affichage ===================== */
 
 const autotestRun = {running:false, results:null, startedAt:0, duration:0};
@@ -15317,7 +15389,7 @@ autotest('Paramètres', 'export Excel (.xlsx) relu par le lecteur de classeurs, 
 });
 autotest('Paramètres', 'version affichée avec sa date, recherche de mise à jour (version publiée plus récente)', async ()=>{
   expect.ok(appBuildInfo('20261024-1203-ff54f95a493b').label==='24/10/2026 à 12h03', 'date lue dans la version');
-  expect.equal(appBuildInfo('20261024-1413-cfb717c9078f'), null, 'fichier non publié');
+  expect.equal(appBuildInfo('20261024-1417-9c69e2610f1a'), null, 'fichier non publié');
   render(); state.route = '#/parametres'; renderContent();
   const card = $('#content-slot [data-fk=carte-version]');
   expect.ok(card && $('[data-fk=version-app]', card).textContent.length>0, 'carte Version et mises à jour');
