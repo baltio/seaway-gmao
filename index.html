@@ -2550,7 +2550,8 @@ function isOnline(){ return navigator.onLine !== false; }
 const RELAY_API = {fetch: (url, opts)=>fetch(url, opts)}; // remplaçable par les autotests
 /* version du relais attendue par cette application (RELAY_VERSION dans relais/Code.gs) ;
    un relais plus ancien fonctionne, mais sans les dernières fonctions (ex. revoir les liens) */
-const RELAY_EXPECTED = 6;
+const RELAY_EXPECTED = 7;
+
 function relayVersion(){ return isRelay() ? Number(state.driveFile.relay.version)||1 : null; }
 function relayOutdated(){ return isRelay() && relayVersion() < RELAY_EXPECTED; }
 const RELAY_POLL_MS = 120000;                          // quotas Apps Script : une vérification toutes les 2 minutes au plus
@@ -2563,9 +2564,10 @@ async function relayCall(action, data, relay){
   try{
     res = await RELAY_API.fetch(r.url, {method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body:JSON.stringify({...(data||{}), action, token:r.token, via:r.url})}); // via : adresse /exec utilisée (relevée par le relais)
   }catch(e){ throw new DriveError(0, 'Relais Seaway injoignable : vérifiez le réseau.'); }
-  if(!res.ok) throw new DriveError(res.status, 'Relais Seaway : erreur '+res.status+'.');
+  const moved = ' Le relais a peut-être changé d’adresse : rouvrez votre lien d’invitation, ou demandez-en un nouveau à l’administrateur.';
+  if(!res.ok) throw new DriveError(res.status, 'Relais Seaway : erreur '+res.status+'.'+(res.status===404 ? moved : ''));
   let j;
-  try{ j = await res.json(); }catch(e){ throw new DriveError(502, 'Relais Seaway : réponse illisible (adresse du relais correcte ?).'); }
+  try{ j = await res.json(); }catch(e){ throw new DriveError(502, 'Relais Seaway : réponse illisible.'+moved); } // déploiement archivé : page HTML de Google
   if(j && j.error) throw new DriveError(j.code===401 ? 403 : (j.code||403), j.code===401 ? 'Lien d’invitation invalide ou révoqué : demandez un nouveau lien à l’administrateur.' : 'Relais Seaway : '+j.error+'.');
   return j;
 }
@@ -11781,7 +11783,7 @@ function exportSpecPdf(spec){ printSheet(buildExportSheet(spec)); }
    APP_BUILD est inscrit à la publication (tools/preparer-deploiement.ps1) :
    « aaaammjj-hhmm-empreinte ». Fichier ouvert en local : version non numérotée.
    La recherche de mise à jour lit version.json sur le site publié. */
-const APP_BUILD = '20261024-1647-a32681eb0f7f';
+const APP_BUILD = '20261024-1652-af0a6bbf000f';
 function appBuildInfo(build){
   const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(?:-(\w+))?/.exec(build||'');
   return m ? {build, date:m[1]+'-'+m[2]+'-'+m[3], time:m[4]+':'+m[5], label:m[3]+'/'+m[2]+'/'+m[1]+' à '+m[4]+'h'+m[5]} : null;
@@ -16260,7 +16262,7 @@ autotest('Paramètres', 'export Excel (.xlsx) relu par le lecteur de classeurs, 
 });
 autotest('Paramètres', 'version affichée avec sa date, recherche de mise à jour (version publiée plus récente)', async ()=>{
   expect.ok(appBuildInfo('20261024-1203-ff54f95a493b').label==='24/10/2026 à 12h03', 'date lue dans la version');
-  expect.equal(appBuildInfo('20261024-1647-a32681eb0f7f'), null, 'fichier non publié');
+  expect.equal(appBuildInfo('20261024-1652-af0a6bbf000f'), null, 'fichier non publié');
   render(); state.route = '#/parametres'; renderContent();
   const card = $('#content-slot [data-fk=carte-version]');
   expect.ok(card && $('[data-fk=version-app]', card).textContent.length>0, 'carte Version et mises à jour');
