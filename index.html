@@ -297,6 +297,16 @@ tr.ord-annule>td{color:var(--text-soft);}
 .map-vessel span{display:inline-block;transform:translate(-50%,-120%);background:var(--c);color:#fff;font:700 12px system-ui, sans-serif;padding:3px 9px;border-radius:12px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.35);}
 .leaflet-tooltip.map-home-label{font-weight:700;}
 .pj-route{font-size:11px;color:var(--link-text);margin-top:2px;}
+.pj-trip{font-size:11px;font-weight:600;margin-top:3px;line-height:1.3;}
+.pj-trip span{display:block;}
+.pj-trip span+span{font-weight:500;}
+.trips-box{display:flex;flex-direction:column;gap:8px;align-items:flex-start;}
+.trip-row{display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius);width:100%;box-sizing:border-box;}
+.trip-n{font-weight:700;color:var(--text-soft);align-self:center;min-width:14px;}
+.trip-leg{display:flex;flex-direction:column;gap:3px;}
+.trip-leg select{min-width:180px;}
+.trip-arrow{align-self:center;font-weight:700;color:var(--text-soft);}
+
 .pn-table th.pn-vessel{box-shadow:inset 4px 0 0 var(--c, transparent);padding-left:10px;}
 .pn-table td.pj-ops{min-width:120px;}
 .ais-frame{width:100%;height:460px;border:0;border-radius:8px;background:#e8eef3;}
@@ -7447,25 +7457,55 @@ const DEFAULT_MAP_PORTS = [
   ['la-rochelle','La Rochelle',46.155,-1.152], ['saint-martin-de-re','Île de Ré – Saint-Martin',46.205,-1.366], ['les-sables','Les Sables-d’Olonne',46.495,-1.786],
   ['port-joinville','Île d’Yeu – Port-Joinville',46.726,-2.348], ['fromentine','Fromentine',46.893,-2.141], ['herbaudiere','Noirmoutier – L’Herbaudière',47.024,-2.299],
   ['pornic','Pornic',47.113,-2.104], ['saint-nazaire','Saint-Nazaire',47.270,-2.201], ['le-croisic','Le Croisic',47.297,-2.513], ['la-turballe','La Turballe',47.346,-2.513],
-  ['vannes','Vannes',47.645,-2.758], ['houat','Houat',47.393,-2.958], ['hoedic','Hoëdic',47.338,-2.873], ['le-palais','Belle-Île – Le Palais',47.348,-3.153],
+  ['vannes','Vannes',47.645,-2.758], ['la-trinite','La Trinité-sur-Mer',47.586,-3.029], ['port-haliguen','Quiberon – Port Haliguen',47.488,-3.100], ['houat','Houat',47.393,-2.958], ['hoedic','Hoëdic',47.338,-2.873], ['le-palais','Belle-Île – Le Palais',47.348,-3.153],
   ['quiberon','Quiberon – Port-Maria',47.475,-3.122], ['port-louis','Port-Louis',47.708,-3.355], ['lorient','Lorient',47.745,-3.360], ['port-tudy','Groix – Port-Tudy',47.643,-3.447],
   ['concarneau','Concarneau',47.870,-3.917], ['glenan','Îles de Glénan',47.722,-4.000], ['benodet','Bénodet',47.873,-4.108], ['guilvinec','Le Guilvinec',47.795,-4.285],
   ['audierne','Audierne',48.020,-4.540], ['sein','Île de Sein',48.038,-4.851], ['douarnenez','Douarnenez',48.098,-4.330], ['camaret','Camaret-sur-Mer',48.280,-4.595],
   ['brest','Brest',48.381,-4.493], ['le-conquet','Le Conquet',48.360,-4.773], ['molene','Molène',48.397,-4.955], ['ouessant','Ouessant – Le Stiff',48.473,-5.055],
   ['roscoff','Roscoff',48.718,-3.966], ['batz','Île de Batz',48.744,-4.010], ['morlaix','Morlaix',48.580,-3.830],
 ].map(([id, name, lat, lng])=>({id, name, lat, lng}));
-function mapPorts(){ const s = setting('mapPorts'); return s && Array.isArray(s.items) ? s.items : DEFAULT_MAP_PORTS; }
+/* ports d'attache par défaut (modifiables dans « MMSI et ports d'attache… ») */
+const DEFAULT_HOME_PORTS = {'men-du':'port-haliguen', 'quehan':'port-haliguen', 'viga':'la-trinite', 'ker-bossy':'port-joinville'};
+/* ports enregistrés ; les ports d'attache par défaut y sont toujours, même dans une liste déjà modifiée */
+function mapPorts(){
+  const s = setting('mapPorts');
+  if(!(s && Array.isArray(s.items))) return DEFAULT_MAP_PORTS;
+  const missing = [...new Set(Object.values(DEFAULT_HOME_PORTS))].filter(id=>!s.items.some(p=>p.id===id)).map(id=>DEFAULT_MAP_PORTS.find(p=>p.id===id)).filter(Boolean);
+  return missing.length ? [...s.items, ...missing] : s.items;
+}
 function mapPort(id){ return mapPorts().find(p=>p.id===id) || null; }
 function mapRoutes(){ const s = setting('mapRoutes'); return s && Array.isArray(s.items) ? s.items : []; }
 function saveMapRoutes(items){ saveSetting('mapRoutes', {items}); }
-function vesselInfo(v){ const s = setting('vesselInfo'); const o = (s && s.items && s.items[v]) || {}; return {mmsi: o.mmsi ?? DEFAULT_MMSI[v] ?? '', homePort: o.homePort || ''}; }
+function vesselInfo(v){ const s = setting('vesselInfo'); const o = (s && s.items && s.items[v]) || {}; return {mmsi: o.mmsi ?? DEFAULT_MMSI[v] ?? '', homePort: o.homePort ?? DEFAULT_HOME_PORTS[v] ?? ''}; }
+/* trajets du jour (planning des navires) : [{from, depart, to, arrivee}] — ports de la carte, heures « hh:mm » */
+function planTrips(r){ return r && Array.isArray(r.trajets) ? r.trajets.filter(t=>t && (t.from || t.to)) : []; }
+function portShort(id){ const p = mapPort(id); return p ? p.name : '?'; }
+function tripLabel(t){ return [t.depart, portShort(t.from)].filter(Boolean).join(' ')+' → '+[t.arrivee, portShort(t.to)].filter(Boolean).join(' '); }
+/* position déduite des trajets (« A → B → A ») ; une position égale n'est pas répétée dans les cases */
+function tripsPosition(trips){ return trips.length ? [portShort(trips[0].from), ...trips.map(t=>portShort(t.to))].join(' → ') : ''; }
+function tripCell(t){ return el('div',{class:'pj-trip', title:tripLabel(t)}, el('span',{}, [t.depart, portShort(t.from)].filter(Boolean).join(' ')), el('span',{}, '→ '+[t.arrivee, portShort(t.to)].filter(Boolean).join(' '))); }
+function planPositionShown(r){ return r && r.position && r.position!==tripsPosition(planTrips(r)) ? r.position : ''; }
+/* ligne de la carte qui relie les deux ports d'un trajet (dans un sens ou dans l'autre) */
+function routeForTrip(v, t){ return mapRoutes().find(r=>r.vessel===v && ((r.from===t.from && r.to===t.to) || (r.from===t.to && r.to===t.from))) || null; }
 function saveVesselInfo(v, data){ const s = setting('vesselInfo'); const items = {...((s && s.items) || {})}; items[v] = {...vesselInfo(v), ...data}; saveSetting('vesselInfo', {items}); }
 function routePoints(r){ const a = mapPort(r.from), b = mapPort(r.to); return [a ? [a.lat, a.lng] : null, ...(r.via||[]), b ? [b.lat, b.lng] : null].filter(Boolean); }
 function routeLabel(r){ return r.name || ((mapPort(r.from)||{}).name || '?')+' → '+((mapPort(r.to)||{}).name || '?'); }
 function marineTrafficUrl(mmsi){ return 'https://www.marinetraffic.com/en/ais/details/ships/mmsi:'+encodeURIComponent(mmsi); }
 function vesselFinderUrl(mmsi){ return 'https://www.vesselfinder.com/vessels/details/'+encodeURIComponent(mmsi); }
 /* ligne prévue au planning (organisation de la journée du navire) */
-function plannedRoute(v, date){ const vp = vesselPlanAt(v, date); return vp && vp.routeId ? mapRoutes().find(r=>r.id===vp.routeId) || null : null; }
+function plannedRoute(v, date){
+  const vp = vesselPlanAt(v, date);
+  if(vp && vp.routeId) return mapRoutes().find(r=>r.id===vp.routeId) || null;
+  for(const t of planTrips(vp)){ const r = routeForTrip(v, t); if(r) return r; }
+  return null;
+}
+/* port où se trouve le navire d'après ses trajets : le jour même, celui du dernier trajet arrivé, sinon le départ du premier */
+function tripPort(v, date){
+  const trips = planTrips(vesselPlanAt(v, date)).filter(t=>t.from || t.to);
+  if(!trips.length) return null;
+  if(date===todayISO()){ const now = new Date().toTimeString().slice(0,5); const done = trips.filter(t=>t.arrivee && t.arrivee<=now).pop(); if(done) return mapPort(done.to); }
+  return mapPort(trips[0].from || trips[0].to);
+}
 /* port reconnu dans la « position prévue » du planning (ex. « Port de Lorient », « Groix ») */
 function plannedPort(v, date){
   const vp = vesselPlanAt(v, date);
@@ -7479,17 +7519,24 @@ function fleetMapData(m){
   const homes = {};
   vessels.forEach(v=>{ const h = vesselInfo(v).homePort; if(h) (homes[h] = homes[h] || []).push(v); });
   const today = {};
-  vessels.forEach(v=>{ const r = plannedRoute(v, m.date); today[v] = {route:r, port: r ? null : plannedPort(v, m.date), plan:vesselPlanAt(v, m.date)}; });
-  const routes = mapRoutes().filter(r=>vessels.includes(r.vessel)).map(r=>({r, pts:routePoints(r), color:vesselColor(r.vessel)||'#2C6BA0', today: !!(today[r.vessel].route && today[r.vessel].route.id===r.id)}))
+  vessels.forEach(v=>{ const r = plannedRoute(v, m.date), vp = vesselPlanAt(v, m.date);
+    today[v] = {route:r, port: tripPort(v, m.date) || (r ? null : plannedPort(v, m.date)), plan:vp, trips:planTrips(vp)}; });
+  const todayRoutes = new Set();
+  vessels.forEach(v=>{ if(today[v].route) todayRoutes.add(today[v].route.id); today[v].trips.forEach(t=>{ const r = routeForTrip(v, t); if(r) todayRoutes.add(r.id); }); });
+  const routes = mapRoutes().filter(r=>vessels.includes(r.vessel)).map(r=>({r, pts:routePoints(r), color:vesselColor(r.vessel)||'#2C6BA0', today:todayRoutes.has(r.id)}))
     .filter(x=>x.pts.length>=2);
+  // trajets du jour sans ligne tracée : trait direct entre les deux ports
+  const tripLines = [];
+  vessels.forEach(v=>today[v].trips.forEach(t=>{ const a = mapPort(t.from), b = mapPort(t.to); if(a && b && !routeForTrip(v, t)) tripLines.push({v, t, pts:[[a.lat, a.lng], [b.lat, b.lng]], color:vesselColor(v)||'#2C6BA0'}); }));
   const markers = vessels.map(v=>{
     const t = today[v];
     let at = null, where = '';
-    if(t.route){ const pts = routePoints(t.route); at = pts[Math.floor(pts.length/2)] || null; if(pts.length===2) at = [(pts[0][0]+pts[1][0])/2, (pts[0][1]+pts[1][1])/2]; where = 'ligne '+routeLabel(t.route); }
+    if(t.trips.length && t.port){ at = [t.port.lat, t.port.lng]; where = t.trips.map(tripLabel).join(' · '); }
+    else if(t.route){ const pts = routePoints(t.route); at = pts[Math.floor(pts.length/2)] || null; if(pts.length===2) at = [(pts[0][0]+pts[1][0])/2, (pts[0][1]+pts[1][1])/2]; where = 'ligne '+routeLabel(t.route); }
     else if(t.port){ at = [t.port.lat, t.port.lng]; where = t.port.name; }
     return at ? {v, at, where} : null;
   }).filter(Boolean);
-  return {vessels, homes, today, routes, markers, ports:mapPorts()};
+  return {vessels, homes, today, routes, tripLines, markers, ports:mapPorts()};
 }
 
 let leafletLib = null;
@@ -7522,6 +7569,7 @@ function drawLeafletMap(box, m){
   d.routes.forEach(x=>L.polyline(x.pts, {color:x.color, weight:x.today ? 6 : 3, opacity:x.today ? 0.95 : 0.7, dashArray:x.today ? null : '7 6'})
     .bindTooltip(vesselName(x.r.vessel)+' : '+routeLabel(x.r)+(x.today ? ' (prévue ce jour)' : ''), {sticky:true}).addTo(map)
     .on('click', ev=>{ if(m.draw || m.placePort) return; L.DomEvent.stopPropagation(ev); openRouteModal(x.r); }));
+  d.tripLines.forEach(x=>L.polyline(x.pts, {color:x.color, weight:5, opacity:0.95}).bindTooltip(vesselName(x.v)+' : '+tripLabel(x.t), {sticky:true}).addTo(map));
   if(m.draw){ const r = mapRoutes().find(x=>x.id===m.draw.routeId) || m.draw.route; const pts = routePoints({...r, via:m.draw.points});
     if(pts.length>=2) L.polyline(pts, {color:'#CE1126', weight:4}).addTo(map);
     m.draw.points.forEach(p=>L.circleMarker(p, {radius:5, color:'#CE1126', fillOpacity:1}).addTo(map)); }
@@ -7548,6 +7596,7 @@ function drawSvgMap(box, m){
   const d = fleetMapData(m);
   let s = '<rect width="'+W+'" height="'+H+'" class="map-sea"/>';
   d.routes.forEach(x=>{ s += '<polyline points="'+x.pts.map(p=>X(p[1]).toFixed(1)+','+Y(p[0]).toFixed(1)).join(' ')+'" fill="none" stroke="'+x.color+'" stroke-width="'+(x.today ? 5 : 2.5)+'"'+(x.today ? '' : ' stroke-dasharray="7 6"')+'><title>'+esc(vesselName(x.r.vessel)+' : '+routeLabel(x.r))+'</title></polyline>'; });
+  d.tripLines.forEach(x=>{ s += '<polyline class="map-trip" points="'+x.pts.map(p=>X(p[1]).toFixed(1)+','+Y(p[0]).toFixed(1)).join(' ')+'" fill="none" stroke="'+x.color+'" stroke-width="5"><title>'+esc(vesselName(x.v)+' : '+tripLabel(x.t))+'</title></polyline>'; });
   if(m.draw){ const r = mapRoutes().find(x=>x.id===m.draw.routeId) || m.draw.route; const pts = routePoints({...r, via:m.draw.points});
     if(pts.length>=2) s += '<polyline points="'+pts.map(p=>X(p[1]).toFixed(1)+','+Y(p[0]).toFixed(1)).join(' ')+'" fill="none" stroke="#CE1126" stroke-width="3"/>'; }
   d.ports.forEach(p=>{ const home = d.homes[p.id];
@@ -7618,7 +7667,7 @@ function viewCarte(slot){
         el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'ais-'+v, onclick:()=>openLiveAisModal(v)}, 'Position en direct')) : null,
       el('div',{class:'desc'}, 'Port d’attache : '+(home ? home.name : '—')),
       el('div',{class:'desc'}, el('button',{type:'button', class:'link-btn', 'data-fk':'carte-jour-'+v, title:'Modifier l’organisation de la journée (planning des navires)', onclick:()=>openVesselPlanModal(v, m.date)},
-        'Prévu le '+fmtDate(m.date)+' : '+(t.plan ? [t.plan.position, t.plan.operations].filter(Boolean).join(' — ') || '—' : 'non renseigné au planning'))),
+        'Prévu le '+fmtDate(m.date)+' : '+(t.plan ? [t.plan.position, ...t.trips.map(tripLabel), t.plan.operations].filter(Boolean).join(' — ') || '—' : 'non renseigné au planning'))),
 
       routes.length && canEdit() ? (()=>{
         const sel = el('select',{class:'select', 'aria-label':'Ligne du '+fmtDate(m.date)+' — '+vesselName(v), 'data-fk':'ligne-du-jour-'+v, onchange:e=>{
@@ -9215,12 +9264,13 @@ function setCrewPlan(crewId, date, code, note){
   return id;
 }
 /* routeId : ligne de la carte des navires prévue ce jour-là (absent : inchangé) */
-function setVesselPlan(vessel, date, position, operations, routeId){
+function setVesselPlan(vessel, date, position, operations, routeId, trajets){
   const id = 'vp:'+(vessel||'sedentaire')+':'+date;
   const rec = state.vesselPlan.find(r=>r.id===id);
   const route = routeId===undefined ? (rec && rec.routeId) || '' : routeId || '';
-  if(!position && !operations && !route){ if(rec) deleteDoc('vesselPlan','vesselPlan', id); return null; }
-  const data = {vessel:vessel||'', date, position:position||'', operations:operations||'', routeId:route};
+  const trips = trajets===undefined ? planTrips(rec) : (trajets||[]).filter(t=>t && (t.from || t.to));
+  if(!position && !operations && !route && !trips.length){ if(rec) deleteDoc('vesselPlan','vesselPlan', id); return null; }
+  const data = {vessel:vessel||'', date, position:position||'', operations:operations||'', routeId:route, trajets:trips};
   if(rec) updateDoc('vesselPlan','vesselPlan', id, data);
   else{ const now = new Date().toISOString(); state.vesselPlan.push({id, ...data, createdAt:now, updatedAt:now, updatedBy:state.me.name||null}); scheduleSave(); }
   return id;
@@ -9322,8 +9372,9 @@ function viewPlanningDaily(slot, p){
         el('button',{type:'button', class:'pj-opsbtn', 'data-fk':'vp-'+(v||'sedentaire')+'-'+d, 'aria-label':planVesselName(v)+', '+fmtDate(d)+(r ? ' : '+[r.position, r.operations].filter(Boolean).join(' — ') : ' : non renseigné'),
           title: r ? [r.position, r.operations].filter(Boolean).join('\n') : '', onclick:()=>openVesselPlanModal(v, d)},
           dock ? el('div',{class:'pj-dock'}, 'Arrêt : '+(dock.titre||'')) : null,
-          r && r.position ? el('div',{class:'pj-pos'}, r.position) : null,
+          planPositionShown(r) ? el('div',{class:'pj-pos'}, planPositionShown(r)) : null,
           r && r.routeId && mapRoutes().some(x=>x.id===r.routeId) ? el('div',{class:'pj-route', title:'Ligne de la carte'}, '⛴ '+routeLabel(mapRoutes().find(x=>x.id===r.routeId))) : null,
+          ...planTrips(r).map(tripCell),
 
           r && r.operations ? el('div',{class:'pj-opstext'}, r.operations) : null));
     }), el('td',{class:'pj-tot'}))));
@@ -9367,8 +9418,9 @@ function viewPlanningVessels(slot, p){
         el('button',{type:'button', class:'pj-opsbtn', 'data-fk':'pn-'+(v||'sedentaire')+'-'+d, 'aria-label':planVesselName(v)+', '+fmtDate(d)+(r ? ' : '+[r.position, r.operations].filter(Boolean).join(' — ') : ' : non renseigné'),
           title: r ? [r.position, route ? 'Ligne : '+routeLabel(route) : '', r.operations].filter(Boolean).join('\n') : '', onclick:()=>openVesselPlanModal(v, d)},
           dock ? el('div',{class:'pj-dock'}, 'Arrêt : '+(dock.titre||'')) : null,
-          r && r.position ? el('div',{class:'pj-pos'}, r.position) : null,
+          planPositionShown(r) ? el('div',{class:'pj-pos'}, planPositionShown(r)) : null,
           route && route.name!==r.position && routeLabel(route)!==r.position ? el('div',{class:'pj-route'}, '⛴ '+routeLabel(route)) : null,
+          ...planTrips(r).map(tripCell),
           r && r.operations ? el('div',{class:'pj-opstext'}, r.operations) : null,
           crew.length ? el('div',{class:'hint', style:'margin:3px 0 0;font-size:11px;'}, crew.length+' à bord') : null));
     }))));
@@ -9399,14 +9451,49 @@ function openVesselPlanModal(vessel, date){
   const routes = vessel ? mapRoutes().filter(x=>x.vessel===vessel) : [];
   const routeField = routes.length ? field('Ligne (carte des navires)','routeId','select', [{v:'', l:'— aucune —'}, ...routes.map(x=>({v:x.id, l:routeLabel(x)}))], r ? r.routeId||'' : '', 'tracé affiché sur la carte ce jour-là') : null;
   if(routeField) $('select', routeField).addEventListener('change', e=>{ const x = routes.find(y=>y.id===e.target.value), pos = $('input[name=position]', posField); if(x && !pos.value.trim()) pos.value = routeLabel(x); });
-  const body = el('div',{}, posField, routeField,
-    field(vessel ? 'Opérations de la journée' : 'Informations','operations','textarea', null, r ? r.operations : '', vessel ? 'horaires, chargements, rotations, escales…' : 'congés, réunions, visites…'),
+  // trajets : port et heure de départ, port et heure d'arrivée (plusieurs rotations possibles)
+  const trips = planTrips(r).map(t=>({...t}));
+  const home = vessel ? vesselInfo(vessel).homePort : '';
+  const portOpts = ()=>{ const ps = mapPorts().slice().sort((a,b)=>(b.id===home)-(a.id===home) || a.name.localeCompare(b.name,'fr')); return [{v:'', l:'— port —'}, ...ps.map(p=>({v:p.id, l:p.name+(p.id===home ? ' (port d’attache)' : '')}))]; };
+  const tripsBox = el('div',{class:'trips-box', 'data-fk':'trajets'});
+  const sel = (t, k, label, i)=>{ const s = el('select',{class:'select', 'aria-label':label+' (trajet '+(i+1)+')', 'data-fk':'trajet-'+k+'-'+i, onchange:e=>{ t[k] = e.target.value; }}, ...portOpts().map(o=>el('option',{value:o.v}, o.l))); s.value = t[k]||''; return s; };
+  const time = (t, k, label, i)=>el('input',{type:'time', class:'select', 'aria-label':label+' (trajet '+(i+1)+')', 'data-fk':'trajet-'+k+'-'+i, value:t[k]||'', onchange:e=>{ t[k] = e.target.value; }});
+  const drawTrips = ()=>{
+    tripsBox.innerHTML = '';
+    trips.forEach((t, i)=>tripsBox.appendChild(el('div',{class:'trip-row'},
+      el('span',{class:'trip-n'}, String(i+1)),
+      el('div',{class:'trip-leg'}, el('span',{class:'hint', style:'margin:0;'}, 'Départ'), sel(t, 'from', 'Port de départ', i), time(t, 'depart', 'Heure de départ', i)),
+      el('span',{class:'trip-arrow', 'aria-hidden':'true'}, '→'),
+      el('div',{class:'trip-leg'}, el('span',{class:'hint', style:'margin:0;'}, 'Arrivée'), sel(t, 'to', 'Port d’arrivée', i), time(t, 'arrivee', 'Heure d’arrivée', i)),
+      canEdit() ? el('button',{class:'btn-danger-text', type:'button', 'aria-label':'Retirer le trajet '+(i+1), onclick:()=>{ trips.splice(i, 1); drawTrips(); }}, 'Retirer') : null)));
+    if(canEdit()) tripsBox.appendChild(el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'ajouter-trajet', onclick:()=>{
+      const last = trips[trips.length-1];
+      trips.push(last ? {from:last.to, depart:'', to:last.from, arrivee:''} : {from:home, depart:'', to:'', arrivee:''}); // retour par défaut
+      drawTrips(); }}, el('span',{html:iconPlus()}), trips.length ? 'Ajouter un trajet (retour proposé)' : 'Ajouter un trajet'));
+  };
+  drawTrips();
+  const body = el('div',{}, posField,
+    vessel ? el('div',{class:'field'}, el('div',{class:'field-label'}, 'Trajets de la journée (ports et heures)'), tripsBox) : null,
+    routeField,
+    field(vessel ? 'Opérations de la journée' : 'Informations','operations','textarea', null, r ? r.operations : '', vessel ? 'chargements, passagers, escales…' : 'congés, réunions, visites…'),
     vessel ? el('div',{class:'hint'}, aboard.length ? 'À bord (planning) : '+aboard.map(crewFullName).join(', ') : 'Aucun marin au planning ce jour-là.') : null);
-  openModal({title:planVesselName(vessel)+' — '+WEEKDAYS_FR[new Date(date+'T12:00:00').getDay()]+' '+fmtDate(date), body, readOnly: !canEdit(),
+  openModal({title:planVesselName(vessel)+' — '+WEEKDAYS_FR[new Date(date+'T12:00:00').getDay()]+' '+fmtDate(date), body, readOnly: !canEdit(), wide: !!vessel,
+    validate: ()=>{
+      for(const [i, t] of trips.entries()){
+        if(!t.from && !t.to && !t.depart && !t.arrivee) continue;
+        if(!t.from || !t.to) return 'Trajet '+(i+1)+' : choisissez le port de départ et le port d’arrivée.';
+        if(t.from===t.to) return 'Trajet '+(i+1)+' : ports de départ et d’arrivée identiques.';
+        if(t.depart && t.arrivee && t.arrivee<t.depart) return 'Trajet '+(i+1)+' : l’heure d’arrivée est avant l’heure de départ.';
+      }
+      return null;
+    },
     onSubmit: async d=>{
-      setVesselPlan(vessel, date, d.position.trim(), d.operations.trim(), d.routeId===undefined ? undefined : d.routeId);
+      const kept = trips.filter(t=>t.from && t.to).map(t=>({from:t.from, depart:t.depart||'', to:t.to, arrivee:t.arrivee||''}));
+      const pos = d.position.trim() && d.position.trim()!==tripsPosition(planTrips(r)) ? d.position.trim() : tripsPosition(kept);
+      setVesselPlan(vessel, date, pos, d.operations.trim(), d.routeId===undefined ? undefined : d.routeId, vessel ? kept : undefined);
       const rt = d.routeId && mapRoutes().find(x=>x.id===d.routeId);
-      logHistory('vesselPlan', 'vp:'+(vessel||'sedentaire')+':'+date, planVesselName(vessel)+' — '+fmtDate(date), 'organisation modifiée', vessel||null, [d.position.trim(), d.operations.trim(), rt ? 'ligne '+routeLabel(rt) : ''].filter(Boolean).join(' · ').slice(0, 200));
+      logHistory('vesselPlan', 'vp:'+(vessel||'sedentaire')+':'+date, planVesselName(vessel)+' — '+fmtDate(date), 'organisation modifiée', vessel||null,
+        [pos, ...kept.map(tripLabel), d.operations.trim(), rt ? 'ligne '+routeLabel(rt) : ''].filter(Boolean).join(' · ').slice(0, 250));
       toast('Organisation enregistrée');
     }});
 }
@@ -9489,12 +9576,13 @@ function buildPlanningICS(o){
     .sort((a,b)=>a.date.localeCompare(b.date)).forEach(r=>{
       const m = crewMember(r.crewId), v = planVesselOf(r), org = v ? vesselPlanAt(v, r.date) : null;
       ev(r.id.replace(/[^\w.-]/g,'-'), r.date, (o.crew ? '' : crewFullName(m)+' : ')+crewPlanLabel(r),
-        [v ? 'Navire : '+vesselName(v) : '', org && org.position ? 'Position prévue : '+org.position : '', org && org.operations ? 'Opérations : '+org.operations : ''].filter(Boolean).join('\n'),
+        [v ? 'Navire : '+vesselName(v) : '', org && org.position ? 'Position prévue : '+org.position : '', ...planTrips(org).map(t=>'Trajet : '+tripLabel(t)), org && org.operations ? 'Opérations : '+org.operations : ''].filter(Boolean).join('\n'),
         v ? vesselName(v) : (crewPlanCode(r.code)||{}).l);
       n++;
     });
-  if(o.vessels) state.vesselPlan.filter(r=>r.date>=o.from && r.date<=o.to && (r.position || r.operations)).sort((a,b)=>a.date.localeCompare(b.date)).forEach(r=>{
-    ev(r.id.replace(/[^\w.-]/g,'-'), r.date, planVesselName(r.vessel)+(r.position ? ' : '+r.position : ''), r.operations ? 'Opérations : '+r.operations : '', planVesselName(r.vessel));
+  if(o.vessels) state.vesselPlan.filter(r=>r.date>=o.from && r.date<=o.to && (r.position || r.operations || planTrips(r).length)).sort((a,b)=>a.date.localeCompare(b.date)).forEach(r=>{
+    ev(r.id.replace(/[^\w.-]/g,'-'), r.date, planVesselName(r.vessel)+(r.position ? ' : '+r.position : ''),
+      [...planTrips(r).map(t=>'Trajet : '+tripLabel(t)), r.operations ? 'Opérations : '+r.operations : ''].filter(Boolean).join('\n'), planVesselName(r.vessel));
     n++;
   });
   lines.push('END:VCALENDAR');
@@ -11163,7 +11251,7 @@ function exportSpecPdf(spec){ printSheet(buildExportSheet(spec)); }
    APP_BUILD est inscrit à la publication (tools/preparer-deploiement.ps1) :
    « aaaammjj-hhmm-empreinte ». Fichier ouvert en local : version non numérotée.
    La recherche de mise à jour lit version.json sur le site publié. */
-const APP_BUILD = '20261024-1417-9c69e2610f1a';
+const APP_BUILD = '20261024-1425-428025e2f663';
 function appBuildInfo(build){
   const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(?:-(\w+))?/.exec(build||'');
   return m ? {build, date:m[1]+'-'+m[2]+'-'+m[3], time:m[4]+':'+m[5], label:m[3]+'/'+m[2]+'/'+m[1]+' à '+m[4]+'h'+m[5]} : null;
@@ -15109,6 +15197,45 @@ autotest('Carte des navires', 'les fenêtres s’ouvrent au-dessus de la carte ;
   expect.ok($$('#content-slot .pn-table tbody tr').length===VESSELS.length+1, 'un navire par ligne, plus le personnel à terre');
   state.route = '#/autotest';
 });
+autotest('Carte des navires', 'ports d’attache par défaut ; trajets du jour (ports et heures de départ et d’arrivée) au planning et sur la carte', async ()=>{
+  const t = todayISO();
+  addDoc('crew','crew',{nom:'Le Goff', prenom:'Jean'}); // le planning journalier s'affiche dès qu'il y a un marin
+  expect.equal(VESSELS.map(v=>portShort(vesselInfo(v.key).homePort)).join('|'), 'Quiberon – Port Haliguen|Quiberon – Port Haliguen|La Trinité-sur-Mer|Île d’Yeu – Port-Joinville', 'Men Du et Quéhan à Port Haliguen, Viga à La Trinité, Ker Bossy à Port-Joinville');
+  saveSetting('mapPorts', {items:DEFAULT_MAP_PORTS.filter(p=>p.id!=='la-trinite')});
+  expect.ok(mapPort('la-trinite'), 'un port d’attache par défaut reste dans une liste de ports modifiée');
+  openVesselPlanModal('men-du', t);
+  $('.modal [data-fk=ajouter-trajet]').click();
+  expect.equal($('.modal [data-fk=trajet-from-0]').value, 'port-haliguen', 'départ proposé : port d’attache');
+  const set = (k, v)=>{ const i = $('.modal [data-fk="trajet-'+k+'"]'); i.value = v; i.dispatchEvent(new Event('change')); };
+  set('to-0', 'le-palais'); set('depart-0', '08:30'); set('arrivee-0', '07:00');
+  confirmTopModal();
+  expect.ok($('.modal [role=alert]').textContent.includes('avant l’heure de départ'), 'heures vérifiées');
+  set('arrivee-0', '09:15');
+  $('.modal [data-fk=ajouter-trajet]').click();
+  expect.ok($('.modal [data-fk=trajet-from-1]').value==='le-palais' && $('.modal [data-fk=trajet-to-1]').value==='port-haliguen', 'retour proposé');
+  set('depart-1', '17:00'); set('arrivee-1', '17:45');
+  confirmTopModal(); await tick(20);
+  const vp = vesselPlanAt('men-du', t);
+  expect.equal(planTrips(vp).map(tripLabel).join(' / '), '08:30 Quiberon – Port Haliguen → 09:15 Belle-Île – Le Palais / 17:00 Belle-Île – Le Palais → 17:45 Quiberon – Port Haliguen');
+  expect.equal(vp.position, 'Quiberon – Port Haliguen → Belle-Île – Le Palais → Quiberon – Port Haliguen', 'position déduite des trajets');
+  setVesselPlan('men-du', t, vp.position, 'fret');
+  expect.equal(planTrips(vesselPlanAt('men-du', t)).length, 2, 'trajets gardés quand on ne les touche pas');
+  // planning des navires et planning journalier
+  state._plan = {start:mondayOf(t), weeks:8, vessel:'', view:'navires', dstart:t}; render(); state.route = '#/planning'; renderContent();
+  { const c = $('#content-slot [data-fk="pn-men-du-'+t+'"]').textContent;
+    expect.ok(c.includes('08:30 Quiberon – Port Haliguen') && c.includes('→ 09:15 Belle-Île – Le Palais') && !$('#content-slot [data-fk="pn-men-du-'+t+'"] .pj-pos'), 'heures dans le planning des navires, sans répéter la position'); }
+  state._plan.view = 'jour'; renderContent();
+  expect.ok($('#content-slot [data-fk="vp-men-du-'+t+'"]').textContent.includes('17:00'), 'et sous le planning des marins');
+  // carte : trajet du jour tracé, navire placé
+  state._map = {date:t, vessel:''}; state.route = '#/carte'; renderContent();
+  expect.ok($$('#content-slot .map-schema polyline.map-trip').length===2, 'trajets tracés (sans ligne enregistrée)');
+  expect.ok($('#content-slot .map-vessel-svg') && $('#content-slot [data-fk=carte-jour-men-du]').textContent.includes('08:30'), 'navire placé, trajets dans l’encart');
+  // une ligne enregistrée entre les deux ports est reconnue comme ligne du jour
+  saveMapRoutes([{id:'lb', vessel:'men-du', from:'port-haliguen', to:'le-palais', name:'', via:[]}]);
+  expect.equal((plannedRoute('men-du', t)||{}).id, 'lb', 'ligne reconnue d’après les ports du trajet');
+  expect.ok(buildPlanningICS({from:t, to:t, vessels:true}).text.includes('Trajet : 08:30 Quiberon – Port Haliguen'), 'trajets dans l’export agenda');
+  state.route = '#/autotest';
+});
 /* ===================== exécution et affichage ===================== */
 
 const autotestRun = {running:false, results:null, startedAt:0, duration:0};
@@ -15389,7 +15516,7 @@ autotest('Paramètres', 'export Excel (.xlsx) relu par le lecteur de classeurs, 
 });
 autotest('Paramètres', 'version affichée avec sa date, recherche de mise à jour (version publiée plus récente)', async ()=>{
   expect.ok(appBuildInfo('20261024-1203-ff54f95a493b').label==='24/10/2026 à 12h03', 'date lue dans la version');
-  expect.equal(appBuildInfo('20261024-1417-9c69e2610f1a'), null, 'fichier non publié');
+  expect.equal(appBuildInfo('20261024-1425-428025e2f663'), null, 'fichier non publié');
   render(); state.route = '#/parametres'; renderContent();
   const card = $('#content-slot [data-fk=carte-version]');
   expect.ok(card && $('[data-fk=version-app]', card).textContent.length>0, 'carte Version et mises à jour');
