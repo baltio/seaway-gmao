@@ -2550,7 +2550,7 @@ function isOnline(){ return navigator.onLine !== false; }
 const RELAY_API = {fetch: (url, opts)=>fetch(url, opts)}; // remplaçable par les autotests
 /* version du relais attendue par cette application (RELAY_VERSION dans relais/Code.gs) ;
    un relais plus ancien fonctionne, mais sans les dernières fonctions (ex. revoir les liens) */
-const RELAY_EXPECTED = 7;
+const RELAY_EXPECTED = 8;
 
 function relayVersion(){ return isRelay() ? Number(state.driveFile.relay.version)||1 : null; }
 function relayOutdated(){ return isRelay() && relayVersion() < RELAY_EXPECTED; }
@@ -2585,9 +2585,28 @@ function blobToBase64(blob){
 }
 function base64ToBlob(b64, type){ const bin = atob(b64||''); const a = new Uint8Array(bin.length); for(let i=0; i<bin.length; i++) a[i] = bin.charCodeAt(i); return new Blob([a], {type:type||'application/octet-stream'}); }
 
+/* lien contenant l'adresse de test « /dev » du relais (donnée par l'éditeur de script) : elle ne
+   fonctionne que pour le propriétaire connecté à Google ; on demande l'adresse /exec du déploiement */
+const RELAY_EXEC_RE = /^https:\/\/script\.google\.com\/macros\/s\/[\w-]{20,}\/exec$/;
+function askRelayExecUrl(){
+  return new Promise(resolve=>{
+    let done = false;
+    const input = el('input',{type:'url', name:'exec', class:'select', style:'width:100%;', 'data-fk':'adresse-exec', placeholder:'https://script.google.com/macros/s/…/exec', 'aria-label':'Adresse /exec du relais'});
+    openModal({title:'Adresse du relais à corriger', submitLabel:'Rejoindre',
+      body:el('div',{},
+        el('div',{class:'banner', role:'status'}, 'Ce lien contient l’adresse de TEST du relais (elle se termine par /dev) : elle ne fonctionne que dans l’éditeur de script.'),
+        el('div',{class:'hint', style:'margin:8px 0;'}, 'Dans le script (script.google.com) : Déployer › Gérer les déploiements › « Application Web » › copiez l’« URL de l’application Web » (elle se termine par /exec) et collez-la ici. Le code du lien est gardé.'),
+        input),
+      validate: d=>RELAY_EXEC_RE.test(String(d.exec||'').trim()) ? null : 'Collez l’adresse qui commence par https://script.google.com/macros/s/ et se termine par /exec.',
+      onSubmit: async d=>{ done = true; resolve(String(d.exec).trim()); },
+      onClose: ()=>{ if(!done) resolve(''); }});
+  });
+}
 /* rejoindre les données d'un relais avec un lien d'invitation */
 async function relayJoin(link){
   if(!isOnline()){ toast('Connexion impossible hors ligne : ouvrez le lien avec du réseau.'); return false; }
+  if(/\/dev$/.test(link.url)){ const exec = await askRelayExecUrl(); if(!exec) return false; link = {...link, url:exec}; }
+
   const r = {url:link.url, token:link.token};
   let info, remote, rev;
   try{
@@ -11783,7 +11802,7 @@ function exportSpecPdf(spec){ printSheet(buildExportSheet(spec)); }
    APP_BUILD est inscrit à la publication (tools/preparer-deploiement.ps1) :
    « aaaammjj-hhmm-empreinte ». Fichier ouvert en local : version non numérotée.
    La recherche de mise à jour lit version.json sur le site publié. */
-const APP_BUILD = '20261024-1652-af0a6bbf000f';
+const APP_BUILD = '20261024-1706-a081c4ca9367';
 function appBuildInfo(build){
   const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(?:-(\w+))?/.exec(build||'');
   return m ? {build, date:m[1]+'-'+m[2]+'-'+m[3], time:m[4]+':'+m[5], label:m[3]+'/'+m[2]+'/'+m[1]+' à '+m[4]+'h'+m[5]} : null;
@@ -14870,6 +14889,18 @@ autotest('Relais', 'invitation : le lien et le QR code correspondent au profil c
   expect.ok(currentProfile() && currentProfile().id===cap && currentRole()==='capitaine', 'Jean reconnu par son nouveau lien');
   state.route = '#/autotest';
 });
+autotest('Relais', 'lien avec l’adresse de test « /dev » : l’adresse /exec est demandée, le code du lien est gardé', async ()=>{
+  const srv = useFakeRelay();
+  srv.url = 'https://script.google.com/macros/s/AKfycbzExecDuDeploiementActif01/exec';
+  const dev = APP_PUBLIC_URL+'#/rejoindre?r='+encodeURIComponent('https://script.google.com/macros/s/AKfycbzXGX0ypfgnQ3oRnlBuUhEaEK/dev')+'&t='+srv.admin;
+  const p = relayJoin(parseInviteLink(dev)); await tick(10);
+  expect.ok($('.modal [data-fk=adresse-exec]') && $('.modal').textContent.includes('/dev'), 'adresse /exec demandée');
+  fillModal({exec:'https://script.google.com/macros/s/AKfycbzXGX0ypfgnQ3oRnlBuUhEaEK/dev'}); confirmTopModal();
+  expect.ok($('.modal [role=alert]').textContent.includes('/exec'), 'adresse /dev refusée');
+  fillModal({exec:srv.url}); confirmTopModal();
+  expect.ok(await p, 'rejoint');
+  expect.ok(isRelay() && state.driveFile.relay.url===srv.url && state.driveFile.relay.token===srv.admin && currentRole()==='admin', 'connecté par l’adresse /exec avec le code du lien');
+});
 autotest('Relais', 'version du relais : l’administrateur est prévenu quand le script installé est ancien', async ()=>{
   const srv = useFakeRelay();
   srv.version = undefined; // ancien script : ne donne pas sa version
@@ -16262,7 +16293,7 @@ autotest('Paramètres', 'export Excel (.xlsx) relu par le lecteur de classeurs, 
 });
 autotest('Paramètres', 'version affichée avec sa date, recherche de mise à jour (version publiée plus récente)', async ()=>{
   expect.ok(appBuildInfo('20261024-1203-ff54f95a493b').label==='24/10/2026 à 12h03', 'date lue dans la version');
-  expect.equal(appBuildInfo('20261024-1652-af0a6bbf000f'), null, 'fichier non publié');
+  expect.equal(appBuildInfo('20261024-1706-a081c4ca9367'), null, 'fichier non publié');
   render(); state.route = '#/parametres'; renderContent();
   const card = $('#content-slot [data-fk=carte-version]');
   expect.ok(card && $('[data-fk=version-app]', card).textContent.length>0, 'carte Version et mises à jour');
