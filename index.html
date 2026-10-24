@@ -2708,9 +2708,8 @@ async function inviteProfile(u){
     const res = await relayCall('invite', {name:profileFullName(u), role:u.role||'equipage', profileId:u.id, readOnly:false});
     logHistory('users', u.id, profileFullName(u), 'invitation créée', null, 'lien d’accès aux données (réf. '+res.ref+')');
     // fiche d'identité du lien : à qui il donne accès, avec quel niveau, et sa référence (Utilisateurs et liens)
-    const idCard = el('div',{class:'invite-id', 'data-fk':'invitation-profil'},
-      el('div',{}, el('div',{class:'lbl'}, profileFullName(u)), el('div',{class:'desc'}, roleDef(u.role).label+(u.fonction ? ' · '+u.fonction : ''))),
-      el('div',{class:'invite-ref'}, 'réf. ', el('strong',{'data-fk':'invitation-ref'}, res.ref)));
+    const idCard = inviteIdCard(u, res.ref);
+    loadRelayLinks(true).then(()=>{ if(state.route.startsWith('#/profils')) renderContent(); }); // bouton « Voir le lien / QR » à jour
     const olderBox = older.length ? el('div',{class:'banner', role:'status', 'data-fk':'anciens-liens'},
       el('div',{style:'flex:1;'}, older.length+' autre(s) lien(s) déjà actif(s) pour ce profil (réf. '+older.map(t=>t.ref).join(', ')+') : ils fonctionnent toujours.'),
       el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'revoquer-anciens', onclick:async e=>{
@@ -2722,6 +2721,51 @@ async function inviteProfile(u){
       'Lien personnel de '+profileFullName(u)+' ('+roleDef(u.role).label+') : il donne accès à l’application et aux données de l’équipe, sans compte Google. Le QR code contient exactement ce lien. À envoyer à cette seule personne ; révocable dans « Utilisateurs et liens » (réf. '+res.ref+').',
       'Bonjour '+(u.prenom||profileFullName(u))+', voici ton accès à Seaway GMAO (à ouvrir sur ton téléphone) :', el('div',{}, idCard, olderBox));
   }catch(e){ toast(e.message); }
+}
+/* liens d'invitation connus du relais (administrateur) : relus à l'ouverture de « Profils & accès » */
+function relayLinks(){ return (state._relayLinks && state._relayLinks.tokens) || null; }
+function loadRelayLinks(force){
+  if(!isRelay() || !state.driveFile.relay.admin) return Promise.resolve(null);
+  const c = state._relayLinks;
+  if(!force && c && (c.loading || Date.now()-c.at < 60000)) return Promise.resolve(c.tokens);
+  state._relayLinks = {...(c||{}), loading:true, at:Date.now()};
+  return relayCall('list').then(j=>{ state._relayLinks = {tokens:j.tokens||[], at:Date.now()}; return state._relayLinks.tokens; })
+    .catch(e=>{ state._relayLinks = {tokens:(c && c.tokens) || null, at:Date.now(), error:e.message}; return null; });
+}
+/* liens d'un profil ; le lien administrateur n'apparaît que sur le profil de l'administrateur connecté avec */
+function profileLinks(pid){ const l = relayLinks(); return l ? l.filter(t=>t.profileId===pid && (!t.admin || t.self)) : []; }
+function inviteIdCard(u, ref){
+  return el('div',{class:'invite-id', 'data-fk':'invitation-profil'},
+    el('div',{}, el('div',{class:'lbl'}, profileFullName(u)), el('div',{class:'desc'}, roleDef(u.role).label+(u.fonction ? ' · '+u.fonction : ''))),
+    el('div',{class:'invite-ref'}, 'réf. ', el('strong',{'data-fk':'invitation-ref'}, ref)));
+}
+/* bouton « Lien d'invitation » d'un profil : lien existant (lien + QR code), sinon création */
+async function openProfileLink(u){
+  if(!isRelay() || !state.driveFile.relay.admin){ openInviteHelpModal(u); return; }
+  await loadRelayLinks(true);
+  const links = profileLinks(u.id).filter(t=>t.link).sort((a,b)=>(b.created||'').localeCompare(a.created||''));
+  if(!links.length){ inviteProfile(u); return; }
+  const t = links.find(x=>!x.admin) || links[0];
+  const extra = el('div',{}, inviteIdCard(u, t.ref),
+    t.admin ? el('div',{class:'banner banner-danger', role:'status', 'data-fk':'lien-admin'}, 'Votre lien ADMINISTRATEUR : à ouvrir sur vos propres appareils seulement, ne le transmettez à personne.') : null,
+    links.length>1 ? el('div',{class:'banner', role:'status', 'data-fk':'anciens-liens'}, el('div',{style:'flex:1;'}, (links.length-1)+' autre(s) lien(s) actif(s) pour ce profil (réf. '+links.slice(1).map(x=>x.ref).join(', ')+') : gérez-les dans « Utilisateurs et liens ».')) : null,
+    canManageProfiles() ? el('div',{style:'margin:0 0 10px;'}, el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'nouveau-lien', onclick:()=>{ closeAllModalsQuiet(); inviteProfile(u); }}, 'Créer un nouveau lien (perdu, téléphone changé…)')) : null);
+  showLinkModal('Lien d’invitation — '+profileFullName(u), t.link,
+    'Lien actuel de '+profileFullName(u)+' ('+roleDef(u.role).label+'), créé le '+(t.created ? fmtDateTime(t.created) : '—')+'. Le QR code contient exactement ce lien. Révocable dans « Utilisateurs et liens » (réf. '+t.ref+').',
+    'Bonjour '+(u.prenom||profileFullName(u))+', voici ton accès à Seaway GMAO (à ouvrir sur ton téléphone) :', extra);
+}
+/* appareil non connecté en administrateur : comment obtenir les liens */
+function openInviteHelpModal(u){
+  openModal({title:'Lien d’invitation — '+profileFullName(u), infoOnly:true, body:el('div',{'data-fk':'aide-invitation'},
+    el('div',{class:'banner', role:'status'}, isRelay()
+      ? 'Cet appareil est connecté avec le lien de '+(state.driveFile.relay.name || 'quelqu’un d’autre')+', qui n’est pas administrateur : seul l’administrateur crée et voit les liens d’invitation.'
+      : 'Cet appareil n’est pas connecté au relais Seaway avec le lien administrateur : les liens d’invitation des profils ne peuvent pas être créés ni affichés ici.'),
+    el('ol',{class:'help-steps'},
+      el('li',{}, 'Ouvrez votre lien administrateur sur cet appareil (il figure dans le « Journal d’exécution » de installer() dans le script du relais).'),
+      el('li',{}, 'Revenez dans « Profils & accès » : chaque profil a alors son lien et son QR code (« Voir le lien » ou « Créer le lien »).')),
+    el('div',{style:'display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;'},
+      el('button',{class:'btn btn-primary btn-sm', type:'button', 'data-fk':'aide-rejoindre', onclick:()=>{ closeAllModalsQuiet(); openJoinModal(); }}, 'Coller le lien administrateur…'),
+      el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>{ closeAllModalsQuiet(); openAppLinkModal(); }}, 'Lien de l’application seule')))});
 }
 async function openActiveLinksModal(){
   let list;
@@ -2739,6 +2783,10 @@ async function openActiveLinksModal(){
             p ? '' : (t.profileId ? 'profil supprimé' : 'aucun profil relié'), p && p.role!==role ? 'profil indiqué « '+roleDef(p.role).label+' »' : '',
             t.created ? 'créé le '+fmtDateTime(t.created) : '', 'réf. '+t.ref].filter(Boolean).join(' · '))),
         el('div',{style:'display:flex;gap:8px;align-items:center;flex-wrap:wrap;'},
+          t.link ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'voir-lien-'+t.ref, onclick:()=>{
+            const pu = t.profileId && state.users.find(x=>x.id===t.profileId);
+            showLinkModal('Lien d’invitation — '+(pu ? profileFullName(pu) : t.name || 'lien'), t.link, 'Lien de '+(pu ? profileFullName(pu) : t.name || 'cette personne')+' ('+roleDef(t.admin ? 'admin' : t.role).label+'). Le QR code contient exactement ce lien.',
+              'Bonjour, voici ton accès à Seaway GMAO :', pu ? inviteIdCard(pu, t.ref) : null); }}, 'Lien / QR') : null,
           el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'modifier-lien-'+t.ref, onclick:()=>openLinkAccessModal(t, ()=>draw())}, 'Modifier'),
           t.admin ? el('span',{class:'hint', style:'margin:0;'}, 'se change dans le script') :
           el('button',{class:'btn-danger-text', type:'button', 'data-fk':'revoquer-'+t.ref, onclick:()=>confirmModal('Révoquer le lien de '+(p ? profileFullName(p) : t.name || 'cette personne')+' ? L’application de cette personne ne pourra plus lire ni envoyer de données.', async()=>{
@@ -7208,6 +7256,8 @@ function viewProfils(slot){
     ...[['','Tous'], ...PROFILE_KINDS.map(k=>[k.v, k.l])].map(([k,l])=>el('button',{type:'button', class:'seg'+(kind===k?' active':''), 'aria-pressed':String(kind===k), 'data-fk':'prof-type-'+(k||'tous'),
       onclick:()=>{ state._profKind = k; renderContent(); }}, l+' ('+state.users.filter(u=>!k || (u.type||'navigant')===k).length+')')));
   const relayAdmin = viaRelay && state.driveFile.relay.admin && canManageProfiles();
+  // liens existants de chaque profil : relus une fois, puis la page est redessinée
+  if(relayAdmin && !state._relayLinks) loadRelayLinks().then(()=>{ if(state.route.startsWith('#/profils')) renderContent(); });
   slot.appendChild(el('div',{class:'card settings-card', 'data-fk':'carte-invitations'}, el('h3',{},'Inviter'),
     el('div',{class:'section-sub', style:'margin-bottom:10px;'}, relayAdmin
       ? 'Chaque profil a son « Lien d’invitation » : la personne l’ouvre sur son téléphone, installe l’application et accède aux données — sans compte Google. Révocable à tout moment.'
@@ -7231,7 +7281,12 @@ function viewProfils(slot){
       el('td',{html:'<span class="badge '+({admin:'retard', technique:'proche', capitaine:'ok'}[u.role]||'inconnu')+'">'+esc(roleDef(u.role).label)+'</span>'+(profileActive(u) ? '' : ' <span class="badge inconnu">Désactivé</span>')}),
       el('td',{}, u.email ? el('a',{href:'mailto:'+u.email, onclick:e=>e.stopPropagation()}, u.email) : '—'),
       el('td',{}, u.telephone ? el('a',{href:'tel:'+u.telephone.replace(/\s+/g,''), onclick:e=>e.stopPropagation()}, u.telephone) : '—'),
-      el('td',{}, relayAdmin && profileActive(u) ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'inviter-'+u.id, onclick:e=>{ e.stopPropagation(); inviteProfile(u); }}, 'Lien d’invitation') : null))));
+      el('td',{}, canManageProfiles() && profileActive(u) ? (()=>{
+        const has = relayAdmin && profileLinks(u.id).some(t=>t.link);
+        return el('button',{class:'btn btn-ghost btn-sm'+(has ? ' has-link' : ''), type:'button', 'data-fk':'inviter-'+u.id, title: relayAdmin ? null : 'Connectez cet appareil avec le lien administrateur pour créer et voir les liens',
+          onclick:e=>{ e.stopPropagation(); openProfileLink(u); }}, has ? 'Voir le lien / QR' : relayAdmin ? 'Créer le lien' : 'Lien d’invitation');
+      })() : null))));
+
     slot.appendChild(el('div',{class:'card', style:'padding:16px 18px;'}, el('div',{class:'table-wrap'}, el('table',{},
       el('thead',{}, el('tr',{}, el('th',{},'Nom'), el('th',{},'Type'), el('th',{},'Niveau d’accès'), el('th',{},'Adresse Gmail'), el('th',{},'Téléphone'), el('th',{}))), tbody))));
   }
@@ -11716,7 +11771,7 @@ function exportSpecPdf(spec){ printSheet(buildExportSheet(spec)); }
    APP_BUILD est inscrit à la publication (tools/preparer-deploiement.ps1) :
    « aaaammjj-hhmm-empreinte ». Fichier ouvert en local : version non numérotée.
    La recherche de mise à jour lit version.json sur le site publié. */
-const APP_BUILD = '20261024-1550-8bf54e4a6b89';
+const APP_BUILD = '20261024-1609-516dae502ab8';
 function appBuildInfo(build){
   const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(?:-(\w+))?/.exec(build||'');
   return m ? {build, date:m[1]+'-'+m[2]+'-'+m[3], time:m[4]+':'+m[5], label:m[3]+'/'+m[2]+'/'+m[1]+' à '+m[4]+'h'+m[5]} : null;
@@ -14664,7 +14719,7 @@ function useFakeRelay(){
         return ok({ok:true, updated:n}); }
       case 'invite': { if(!admin) return ok({error:'réservé à l’administrateur', code:403}); const t = tok();
         srv.tokens[t] = {name:q.name, role:q.role, profileId:q.profileId, created:'2026-10-23T10:00:00.000Z'}; return ok({token:t, ref:t.slice(0,8), link:srv.link(t)}); }
-      case 'list': return ok({tokens:Object.entries(srv.tokens).map(([t,o])=>({ref:t.slice(0,8), name:o.name, role:o.role, profileId:o.profileId||'', admin:!!o.admin, readOnly:!!o.readOnly, self:t===q.token}))});
+      case 'list': return ok({tokens:Object.entries(srv.tokens).map(([t,o])=>({ref:t.slice(0,8), name:o.name, role:o.role, profileId:o.profileId||'', admin:!!o.admin, readOnly:!!o.readOnly, self:t===q.token, link:srv.link(t), created:o.created||''}))});
       case 'revoke': Object.keys(srv.tokens).forEach(t=>{ if(t.startsWith(q.ref) && !srv.tokens[t].admin) delete srv.tokens[t]; }); return ok({ok:true});
     }
     return ok({error:'action inconnue', code:400});
@@ -14772,12 +14827,30 @@ autotest('Relais', 'invitation : le lien et le QR code correspondent au profil c
   expect.ok(!$('.modal [data-fk=anciens-liens]'), 'premier lien : rien à signaler');
   const a = await invite(mat);
   expect.ok(srv.tokens[a.tok].profileId===mat && srv.tokens[a.tok].role==='equipage' && a.tok!==j.tok, 'chaque profil a son propre lien');
-  const j2 = await invite(cap);
-  expect.ok($('.modal [data-fk=anciens-liens]').textContent.includes(j.tok.slice(0, 8)), 'ancien lien de Jean signalé');
+  // le profil a déjà un lien : il est réaffiché (même lien, même QR code), pas recréé
+  const again = await invite(cap);
+  expect.ok(again.tok===j.tok && $('.modal .qr-box').dataset.qr===j.link, 'lien existant réaffiché avec son QR code');
+  expect.ok($('#content-slot [data-fk="inviter-'+cap+'"]').textContent.includes('Voir le lien'), 'bouton « Voir le lien / QR » sur le profil');
+  expect.ok($('.modal [data-fk=nouveau-lien]'), 'bouton « Créer un nouveau lien »'); $('.modal [data-fk=nouveau-lien]').click(); await tick(30);
+  const j2 = {link:$('.modal [data-fk=lien-genere]').value}; j2.tok = parseInviteLink(j2.link).token;
+  expect.ok($('.modal [data-fk=anciens-liens]').textContent.includes(j.tok.slice(0, 8)), 'nouveau lien demandé : l’ancien est signalé');
   $('.modal [data-fk=revoquer-anciens]').click(); await tick(30);
   expect.ok(!srv.tokens[j.tok] && srv.tokens[j2.tok] && srv.tokens[a.tok], 'ancien lien révoqué ; le nouveau et celui d’Anne restent valables');
   closeAllModals();
+  // « Utilisateurs et liens » : chaque lien se réaffiche (lien + QR)
+  expect.ok($('#content-slot [data-fk=liens-actifs]'), 'bouton « Utilisateurs et liens »'); $('#content-slot [data-fk=liens-actifs]').click(); await tick(30);
+  expect.ok($('.modal [data-fk="voir-lien-'+a.tok.slice(0,8)+'"]'), 'bouton « Lien / QR » du lien d’Anne'); $('.modal [data-fk="voir-lien-'+a.tok.slice(0,8)+'"]').click(); await tick(10);
+  expect.equal($$('.modal .qr-box').pop().dataset.qr, a.link, 'lien d’Anne retrouvé par l’administrateur');
+  closeAllModals();
+  // appareil sans le lien administrateur : le bouton reste visible et explique comment faire
+  const saved = {...state.driveFile.relay};
+  state.driveFile = null; prefStore.setItem('sw_profile_id', adm); render(); state.route = '#/profils'; renderContent(); // administrateur sur un appareil non relié au relais
+  expect.ok($('#content-slot [data-fk="inviter-'+cap+'"]'), 'bouton visible sans le lien administrateur'); $('#content-slot [data-fk="inviter-'+cap+'"]').click();
+  expect.ok($('.modal [data-fk=aide-invitation]') && $('.modal').textContent.includes('lien administrateur'), 'sans le lien administrateur : marche à suivre');
+  closeAllModals();
+  state.driveFile = {id:'data1', name:'seaway-gmao-data.json', relay:saved, canEdit:true, _metaRev:srv.rev}; prefStore.removeItem('sw_profile_id');
   // sur le téléphone de Jean, le nouveau lien ouvre bien son profil
+
   DATA_KEYS.forEach(k=>{ if(k!=='users') state[k] = []; });
   clearTimeout(saveTimer); await driveSyncNow(false); await tick(20);
   Object.assign(state, {driveFile:null, driveUser:null, lastSyncAt:null, dirty:false, syncBase:null}); DATA_KEYS.forEach(k=>{ state[k] = []; });
@@ -16164,7 +16237,7 @@ autotest('Paramètres', 'export Excel (.xlsx) relu par le lecteur de classeurs, 
 });
 autotest('Paramètres', 'version affichée avec sa date, recherche de mise à jour (version publiée plus récente)', async ()=>{
   expect.ok(appBuildInfo('20261024-1203-ff54f95a493b').label==='24/10/2026 à 12h03', 'date lue dans la version');
-  expect.equal(appBuildInfo('20261024-1550-8bf54e4a6b89'), null, 'fichier non publié');
+  expect.equal(appBuildInfo('20261024-1609-516dae502ab8'), null, 'fichier non publié');
   render(); state.route = '#/parametres'; renderContent();
   const card = $('#content-slot [data-fk=carte-version]');
   expect.ok(card && $('[data-fk=version-app]', card).textContent.length>0, 'carte Version et mises à jour');
