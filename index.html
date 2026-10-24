@@ -2359,7 +2359,9 @@ function locationCard(){
     const link = parseHttpsUrl(state.driveFile.webViewLink);
     row(isRelay() ? 'Accès aux données' : 'Droits sur Google Drive', state.driveReadOnly ? 'Lecture seule' : 'Modification',
       isRelay() ? 'Par lien d’invitation personnel (relais Seaway) : il se révoque dans « Profils & accès › Liens actifs ».' : 'Les droits se gèrent dans Google Drive, par le partage du dossier « '+(state.driveFile.folderName||'Seaway GMAO')+' ».',
-      link ? el('a',{href:link.href, target:'_blank', rel:'noopener noreferrer', class:'btn btn-ghost btn-sm'}, el('span',{html:iconExternal(14)}), 'Ouvrir dans Drive') : null);
+      el('div',{style:'display:flex;gap:6px;flex-wrap:wrap;'},
+        state.driveFile.folderId ? el('a',{href:'https://drive.google.com/drive/folders/'+encodeURIComponent(state.driveFile.folderId), target:'_blank', rel:'noopener noreferrer', class:'btn btn-ghost btn-sm', 'data-fk':'dossier-drive'}, el('span',{html:iconExternal(14)}), 'Ouvrir le dossier dans Drive') : null,
+        link ? el('a',{href:link.href, target:'_blank', rel:'noopener noreferrer', class:'btn btn-ghost btn-sm'}, el('span',{html:iconExternal(14)}), 'Ouvrir le fichier') : null));
   }
   row('Dernière synchronisation', state.lastSyncAt ? fmtDateTime(state.lastSyncAt)+' ('+fmtAgo(state.lastSyncAt)+')' : 'Jamais',
     state.lastSyncBy ? 'Dernière écriture dans l’emplacement par '+state.lastSyncBy : null);
@@ -3720,16 +3722,19 @@ function drawContent(){
 }
 
 /* ===================== DASHBOARD ===================== */
+/* un emplacement partagé est connecté (fichier, dossier, Google Drive, relais) */
+function hasSharedLocation(){ return !!(state.fileHandle || state.fileName || state.dirHandle || state.driveFile); }
 function viewDashboard(slot){
   slot.innerHTML = '';
-  if(!state.fileHandle && !state.fileName){
+  if(!hasSharedLocation()){
     slot.appendChild(el('div',{class:'banner'}, el('span',{html:iconFile()}),
-      el('div',{style:'flex:1;'}, 'Aucun fichier de données connecté — les données ne sont conservées que dans ce navigateur pour l’instant.'),
-      el('button',{class:'btn btn-ghost btn-sm', onclick:openDataFile}, 'Connecter un fichier')));
+      el('div',{style:'flex:1;'}, 'Aucun emplacement de données connecté — les données ne sont conservées que dans ce navigateur pour l’instant.'),
+      el('button',{class:'btn btn-ghost btn-sm', onclick:openLocationModal}, 'Choisir l’emplacement')));
   }
   const lastBackup = prefStore.getItem('sw_last_backup_at');
   const snoozeUntil = prefStore.getItem('sw_backup_snooze_until');
-  const backupIsStale = !lastBackup || diffDays(localISO(new Date(lastBackup)), todayISO()) > 30;
+  // avec Google Drive ou un dossier, les archives hebdomadaires sont automatiques : pas de rappel d'export
+  const backupIsStale = !state.driveFile && !state.dirHandle && (!lastBackup || diffDays(localISO(new Date(lastBackup)), todayISO()) > 30);
   const isSnoozed = snoozeUntil && todayISO() < snoozeUntil;
   if(backupIsStale && !isSnoozed){
     slot.appendChild(el('div',{class:'banner'},
@@ -9645,8 +9650,8 @@ function viewHistorique(slot){
   if(state._histVessel) filtered = filtered.filter(r=>r.vessel===state._histVessel);
   if(state._histType) filtered = filtered.filter(r=>r.entityType===state._histType);
 
-  if(!state.fileHandle && !state.fileName){
-    slot.appendChild(el('div',{class:'banner'}, el('span',{html:iconClock()}), 'Aucun fichier connecté : l’historique n’est conservé que dans ce navigateur.'));
+  if(!hasSharedLocation()){
+    slot.appendChild(el('div',{class:'banner'}, el('span',{html:iconClock()}), 'Aucun emplacement de données connecté : l’historique n’est conservé que dans ce navigateur.'));
   }
   if(filtered.length===0){
     slot.appendChild(el('div',{class:'card empty'}, el('h3',{},'Aucun événement'), 'Chaque création, modification ou suppression apparaîtra ici.'));
@@ -12922,6 +12927,17 @@ autotest('Relais', 'proposé dans « Emplacement », même sans Google Drive con
   fillModal({lien:'pas un lien'}); confirmTopModal();
   expect.ok($('.modal [role=alert]').textContent.includes('ne contient pas'));
   closeAllModals();
+});
+
+autotest('Interface', 'tableau de bord : pas d’alerte « aucun fichier » ni de rappel d’export une fois Google Drive connecté', async ()=>{
+  render(); state.route = '#/dashboard'; renderContent();
+  expect.ok($('#content-slot').textContent.includes('Aucun emplacement de données connecté'), 'sans emplacement : alerte');
+  state.driveFile = {id:'f1', name:'seaway-gmao-data.json', folderName:'Seaway GMAO'};
+  renderContent();
+  expect.ok(!$('#content-slot').textContent.includes('Aucun emplacement') && !$('#content-slot').textContent.includes('sauvegarde exportée'), 'Drive connecté : ni alerte ni rappel d’export');
+  state.route = '#/historique'; renderContent();
+  expect.ok(!$('#content-slot').textContent.includes('Aucun emplacement'), 'historique non plus');
+  state.driveFile = null; state.route = '#/autotest';
 });
 
 /* ===================== Annuler une action ===================== */
