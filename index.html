@@ -2548,6 +2548,11 @@ function isOnline(){ return navigator.onLine !== false; }
    Le relais refuse une écriture si le fichier a changé depuis la dernière
    lecture (révision) : l'application refusionne et réessaie. */
 const RELAY_API = {fetch: (url, opts)=>fetch(url, opts)}; // remplaçable par les autotests
+/* version du relais attendue par cette application (RELAY_VERSION dans relais/Code.gs) ;
+   un relais plus ancien fonctionne, mais sans les dernières fonctions (ex. revoir les liens) */
+const RELAY_EXPECTED = 3;
+function relayVersion(){ return isRelay() ? Number(state.driveFile.relay.version)||1 : null; }
+function relayOutdated(){ return isRelay() && relayVersion() < RELAY_EXPECTED; }
 const RELAY_POLL_MS = 120000;                          // quotas Apps Script : une vérification toutes les 2 minutes au plus
 class RelayConflict extends Error{}
 function isRelay(){ return !!(state.driveFile && state.driveFile.relay); }
@@ -2594,7 +2599,7 @@ async function relayJoin(link){
     {value:'replace', label:'Les remplacer par celles de l’équipe', hint:'Les données de cet appareil sont abandonnées.'}]);
   if(!how) return false;
   state.driveFile = {id:info.fileId, name:info.fileName||DATA_FILE_NAME, folderId:null, folderName:info.folderName||'Seaway GMAO', webViewLink:'', canEdit:info.canEdit!==false,
-    relay:{url:r.url, token:r.token, name:info.user.name||'', role:info.user.role||'', profileId:info.user.profileId||'', admin:!!info.user.admin}, _metaRev:rev};
+    relay:{url:r.url, token:r.token, name:info.user.name||'', role:info.user.role||'', profileId:info.user.profileId||'', admin:!!info.user.admin, version:Number(info.relayVersion)||1}, _metaRev:rev};
   state.driveUser = {name:info.user.name||'', email:''};
   state.driveReadOnly = info.canEdit===false; state.driveNeedsAuth = false; state.driveError = null;
   forgetHandle(); setDataFolder(null); state.fileHandle = null; state.resumeHandle = null; state.fileName = null;
@@ -2642,8 +2647,9 @@ function openJoinModal(){
 function relayApplyUser(j){
   if(!isRelay() || !j || !j.user) return;
   const r = state.driveFile.relay, u = j.user, canEdit = j.canEdit!==false;
-  if(r.name===(u.name||'') && r.role===(u.role||'') && r.profileId===(u.profileId||'') && r.admin===!!u.admin && (state.driveFile.canEdit!==false)===canEdit) return;
-  Object.assign(r, {name:u.name||'', role:u.role||'', profileId:u.profileId||'', admin:!!u.admin});
+  const ver = Number(j.relayVersion)||1;
+  if(r.name===(u.name||'') && r.role===(u.role||'') && r.profileId===(u.profileId||'') && r.admin===!!u.admin && (state.driveFile.canEdit!==false)===canEdit && (Number(r.version)||1)===ver) return;
+  Object.assign(r, {name:u.name||'', role:u.role||'', profileId:u.profileId||'', admin:!!u.admin, version:ver});
   state.driveFile.canEdit = canEdit; state.driveReadOnly = !canEdit;
   driveSaveConnection(); applyIdentity();
   setTimeout(render, 0);
@@ -7258,6 +7264,10 @@ function viewProfils(slot){
   const relayAdmin = viaRelay && state.driveFile.relay.admin && canManageProfiles();
   // liens existants de chaque profil : relus une fois, puis la page est redessinée
   if(relayAdmin && !state._relayLinks) loadRelayLinks().then(()=>{ if(state.route.startsWith('#/profils')) renderContent(); });
+  if(relayAdmin && relayOutdated()) slot.appendChild(el('div',{class:'banner banner-danger', role:'status', 'data-fk':'relais-a-jour'},
+    el('div',{style:'flex:1;'}, el('strong',{}, 'Relais à mettre à jour (version '+relayVersion()+', attendue : '+RELAY_EXPECTED+').'),
+      ' Dans le script (script.google.com) : remplacez Code.gs par relais/Code.gs, enregistrez, puis « Déployer » › « Gérer les déploiements » › déploiement « Application Web » › crayon › Version : « Nouvelle version » › « Déployer ». '
+      + 'Ne créez pas un nouveau déploiement « Bibliothèque » : l’adresse /exec resterait sur l’ancien script. Jusque-là, les liens existants ne peuvent pas être réaffichés.')));
   slot.appendChild(el('div',{class:'card settings-card', 'data-fk':'carte-invitations'}, el('h3',{},'Inviter'),
     el('div',{class:'section-sub', style:'margin-bottom:10px;'}, relayAdmin
       ? 'Chaque profil a son « Lien d’invitation » : la personne l’ouvre sur son téléphone, installe l’application et accède aux données — sans compte Google. Révocable à tout moment.'
@@ -11771,7 +11781,7 @@ function exportSpecPdf(spec){ printSheet(buildExportSheet(spec)); }
    APP_BUILD est inscrit à la publication (tools/preparer-deploiement.ps1) :
    « aaaammjj-hhmm-empreinte ». Fichier ouvert en local : version non numérotée.
    La recherche de mise à jour lit version.json sur le site publié. */
-const APP_BUILD = '20261024-1609-516dae502ab8';
+const APP_BUILD = '20261024-1616-1bfea11f1e10';
 function appBuildInfo(build){
   const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(?:-(\w+))?/.exec(build||'');
   return m ? {build, date:m[1]+'-'+m[2]+'-'+m[3], time:m[4]+':'+m[5], label:m[3]+'/'+m[2]+'/'+m[1]+' à '+m[4]+'h'+m[5]} : null;
@@ -14688,7 +14698,7 @@ autotest('Interface', 'couleur du navire sélectionné : fond, bandeau, fenêtre
 function useFakeRelay(){
   let n = 0;
   const tok = ()=>((++n).toString(16)+'0a1b2c3d4e5f').padEnd(32, 'c'); // références (8 premiers caractères) distinctes
-  const srv = {url:'https://script.google.com/macros/s/TEST/exec', rev:0, calls:[], tokens:{}, files:{}, archives:{},
+  const srv = {url:'https://script.google.com/macros/s/TEST/exec', rev:0, calls:[], tokens:{}, files:{}, archives:{}, version:RELAY_EXPECTED,
     content:JSON.stringify({app:'seaway-gmao', version:1, revision:0, savedAt:'2026-10-01T00:00:00.000Z', savedBy:'Relais'})};
   srv.admin = tok(); srv.tokens[srv.admin] = {name:'Administrateur', role:'admin', admin:true};
   srv.link = t=>APP_PUBLIC_URL+'#/rejoindre?r='+encodeURIComponent(srv.url)+'&t='+t;
@@ -14702,8 +14712,8 @@ function useFakeRelay(){
     const admin = !!info.admin || info.role==='admin';
     const user = {name:info.name, role:admin ? 'admin' : info.role, profileId:info.profileId||'', admin, readOnly:!!info.readOnly};
     switch(q.action){
-      case 'ping': return ok({ok:true, rev:srv.rev, fileId:'data1', fileName:'seaway-gmao-data.json', folderName:'Seaway GMAO', canEdit:!info.readOnly, user});
-      case 'meta': return ok({rev:srv.rev, canEdit:!info.readOnly, user});
+      case 'ping': return ok({ok:true, rev:srv.rev, fileId:'data1', fileName:'seaway-gmao-data.json', folderName:'Seaway GMAO', canEdit:!info.readOnly, user, relayVersion:srv.version});
+      case 'meta': return ok({rev:srv.rev, canEdit:!info.readOnly, user, relayVersion:srv.version});
       case 'get': return ok({rev:srv.rev, content:srv.content});
       case 'put': if(info.readOnly) return ok({error:'accès en lecture seule', code:403}); if(String(q.expectedRev)!==String(srv.rev)) return ok({conflict:true, rev:srv.rev}); srv.content = q.content; srv.rev++; return ok({ok:true, rev:srv.rev});
       case 'putAtt': { const id = 'fakeAttachmentId'+Object.keys(srv.files).length; srv.files[id] = {mime:q.mime, data:q.data}; return ok({id}); }
@@ -14858,7 +14868,20 @@ autotest('Relais', 'invitation : le lien et le QR code correspondent au profil c
   expect.ok(currentProfile() && currentProfile().id===cap && currentRole()==='capitaine', 'Jean reconnu par son nouveau lien');
   state.route = '#/autotest';
 });
+autotest('Relais', 'version du relais : l’administrateur est prévenu quand le script installé est ancien', async ()=>{
+  const srv = useFakeRelay();
+  srv.version = undefined; // ancien script : ne donne pas sa version
+  await relayJoin({url:srv.url, token:srv.admin});
+  expect.ok(relayOutdated() && relayVersion()===1, 'ancien relais détecté');
+  render(); state.route = '#/profils'; renderContent();
+  const b = $('#content-slot [data-fk=relais-a-jour]');
+  expect.ok(b && b.textContent.includes('Nouvelle version') && b.textContent.includes('Bibliothèque'), 'marche à suivre affichée');
+  srv.version = RELAY_EXPECTED; await driveMeta('data1'); await tick(10); renderContent();
+  expect.ok(!relayOutdated() && !$('#content-slot [data-fk=relais-a-jour]'), 'relais à jour : plus d’avertissement (vérifié toutes les 2 minutes)');
+  state.route = '#/autotest';
+});
 autotest('Relais', 'synchronisation : écriture refusée si un collègue a écrit entre-temps, refusion sans perte', async ()=>{
+
   const srv = useFakeRelay();
   await relayJoin({url:srv.url, token:srv.admin});
   addDoc('jobs','jobs',{vessel:'men-du', titre:'Saisi ici'}); clearTimeout(saveTimer);
@@ -16237,7 +16260,7 @@ autotest('Paramètres', 'export Excel (.xlsx) relu par le lecteur de classeurs, 
 });
 autotest('Paramètres', 'version affichée avec sa date, recherche de mise à jour (version publiée plus récente)', async ()=>{
   expect.ok(appBuildInfo('20261024-1203-ff54f95a493b').label==='24/10/2026 à 12h03', 'date lue dans la version');
-  expect.equal(appBuildInfo('20261024-1609-516dae502ab8'), null, 'fichier non publié');
+  expect.equal(appBuildInfo('20261024-1616-1bfea11f1e10'), null, 'fichier non publié');
   render(); state.route = '#/parametres'; renderContent();
   const card = $('#content-slot [data-fk=carte-version]');
   expect.ok(card && $('[data-fk=version-app]', card).textContent.length>0, 'carte Version et mises à jour');
