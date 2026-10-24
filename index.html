@@ -262,6 +262,38 @@ tr.ord-annule>td{color:var(--text-soft);}
 .company-tabs>.tabs+.tabs{flex:0 0 auto;padding-left:6px;}
 .tab.tab-company.active{border-color:var(--navy-500);}
 .nc-jobs .settings-row{padding:6px 0;}
+/* menu regroupé : nombre de pages du groupe, onglets du groupe en tête de page */
+.nav-count{margin-left:auto;font-size:10.5px;font-weight:700;opacity:.55;background:rgba(255,255,255,.08);border-radius:10px;padding:1px 7px;}
+.subnav{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 16px;padding:0 0 12px;border-bottom:1px solid var(--border);}
+.subnav-item{display:inline-flex;align-items:center;gap:7px;padding:7px 13px;border-radius:20px;font-size:13.5px;font-weight:600;color:var(--text-soft);text-decoration:none;border:1px solid var(--border);background:var(--surface);}
+.subnav-item:hover{color:var(--text);border-color:var(--navy-500);}
+.subnav-item.active{background:var(--primary);border-color:var(--primary);color:#fff;}
+.subnav-item svg{width:15px;height:15px;}
+/* carte des navires */
+.fleet-layout{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:14px;align-items:start;}
+@media (max-width:1000px){ .fleet-layout{grid-template-columns:1fr;} }
+.fleet-map-card{padding:0;overflow:hidden;}
+.fleet-map{height:min(72vh, 680px);min-height:420px;background:#cfe3f1;position:relative;}
+.fleet-map.map-picking, .fleet-map.map-picking .leaflet-container{cursor:crosshair;}
+.fleet-side{display:flex;flex-direction:column;gap:10px;}
+.fleet-vessel{padding:12px 14px;border-left:5px solid var(--c);}
+.fleet-vessel-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:6px;}
+.fleet-vessel .desc{font-size:12.5px;color:var(--text-soft);margin-top:4px;}
+.fleet-links{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0;}
+.fleet-routes{display:flex;flex-direction:column;align-items:flex-start;gap:3px;margin-top:8px;font-size:13px;}
+.map-schema{width:100%;height:100%;display:block;}
+.map-schema .map-sea{fill:#d7e8f3;}
+.map-schema .map-port{fill:#2C6BA0;stroke:#0A2540;stroke-width:1;}
+.map-schema .map-port.map-port-home{fill:#fff;stroke-width:3;}
+.map-schema .map-port-label{font:11px system-ui, sans-serif;fill:#0A2540;}
+.map-schema .map-port-label.map-port-home{font-weight:700;font-size:12px;}
+.map-schema .map-vessel-svg text{font:700 12px system-ui, sans-serif;fill:#fff;}
+.map-offline-note{position:absolute;left:10px;bottom:6px;margin:0;background:rgba(255,255,255,.85);color:#0A2540;padding:2px 8px;border-radius:6px;}
+.map-vessel span{display:inline-block;transform:translate(-50%,-120%);background:var(--c);color:#fff;font:700 12px system-ui, sans-serif;padding:3px 9px;border-radius:12px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.35);}
+.leaflet-tooltip.map-home-label{font-weight:700;}
+.pj-route{font-size:11px;color:var(--link-text);margin-top:2px;}
+.ais-frame{width:100%;height:460px;border:0;border-radius:8px;background:#e8eef3;}
+
 .fuel-tanks th[scope=row]{font-weight:600;white-space:nowrap;}
 .fuel-tanks .fuel-num{width:100%;min-width:84px;}
 .fuel-tanks tr.fuel-go th[scope=row]{box-shadow:inset 3px 0 0 var(--navy-500);padding-left:8px;}
@@ -3647,6 +3679,7 @@ const NAV = [
   {route:'#/bord', label:'Saisie à bord', icon:()=>iconClipboard()},
   {route:'#/dashboard', label:'Tableau de bord', icon:iconGrid},
   {route:'#/comparatif', label:'Comparatif flotte', icon:iconLayers},
+  {route:'#/carte', label:'Carte des navires', icon:()=>iconMap()},
   {route:'#/calendrier', label:'Calendrier', icon:iconCalendar},
   {route:'#/rappels', label:'Rappels & agenda', icon:()=>iconBell()},
   {route:'#/entretien', label:'Entretien', icon:iconWrench},
@@ -3668,6 +3701,39 @@ const NAV = [
   {route:'#/historique', label:'Historique', icon:iconClock},
   {route:'#/parametres', label:'Paramètres', icon:iconSettings},
 ];
+
+/* Menu de gauche : les modules sont regroupés ; chaque groupe s'ouvre sur sa dernière
+   page visitée, et ses pages sont proposées en onglets en haut de l'écran. Les
+   adresses (#/…) ne changent pas. */
+const NAV_GROUPS = [
+  {id:'bord', label:'Saisie à bord', icon:()=>iconClipboard(), routes:['#/bord']},
+  {id:'accueil', label:'Tableau de bord', icon:iconGrid, routes:['#/dashboard','#/comparatif']},
+  {id:'agenda', label:'Agenda', icon:iconCalendar, routes:['#/calendrier','#/rappels']},
+  {id:'carte', label:'Carte des navires', icon:()=>iconMap(), routes:['#/carte']},
+  {id:'maintenance', label:'Maintenance', icon:iconWrench, routes:['#/entretien','#/defauts','#/arrets','#/equipements','#/certificats-navire']},
+  {id:'stocks', label:'Stocks & commandes', icon:iconBox, routes:['#/inventaire','#/commandes']},
+  {id:'carburant', label:'Carburant & huiles', icon:iconDroplet, routes:['#/carburant','#/consommations']},
+  {id:'equipage', label:'Équipage', icon:iconUser, routes:['#/equipage','#/planning','#/heures']},
+  {id:'documents', label:'Documents & rapports', icon:iconBook, routes:['#/documentation','#/tableurs','#/rapports']},
+  {id:'historique', label:'Historique', icon:iconClock, routes:['#/historique']},
+  {id:'parametres', label:'Paramètres', icon:iconSettings, routes:['#/parametres','#/profils']},
+];
+const NAV_SUB_LABELS = {'#/carburant':'Relevés et soutages', '#/dashboard':'Vue d’ensemble', '#/parametres':'Réglages', '#/rappels':'Rappels', '#/equipage':'Marins'};
+function routeKey(route){ const r = String(route||''); if(r.startsWith('#/certificats-marins')) return '#/equipage'; const n = NAV.find(x=>r.startsWith(x.route)); return n ? n.route : '#/dashboard'; }
+function navGroupOf(route){ const k = routeKey(route); return NAV_GROUPS.find(g=>g.routes.includes(k)) || NAV_GROUPS[1]; }
+function visibleGroupRoutes(g){ const vis = new Set(visibleNav().map(n=>n.route)); return g.routes.filter(r=>vis.has(r)); }
+function visibleNavGroups(){ return NAV_GROUPS.filter(g=>visibleGroupRoutes(g).length); }
+/* page d'entrée d'un groupe : la dernière visitée (si encore visible), sinon la première */
+function groupEntryRoute(g){ const last = (state._groupLast||{})[g.id]; const vis = visibleGroupRoutes(g); return vis.includes(last) ? last : vis[0]; }
+function subNav(route){
+  const g = navGroupOf(route), vis = visibleGroupRoutes(g), cur = routeKey(route);
+  state._groupLast = state._groupLast || {}; state._groupLast[g.id] = cur;
+  if(vis.length<2) return null;
+  return el('nav',{class:'subnav', 'aria-label':g.label},
+    ...vis.map(r=>{ const n = NAV.find(x=>x.route===r); const on = r===cur;
+      return el('a',{class:'subnav-item'+(on ? ' active' : ''), href:r, 'aria-current':on ? 'page' : null, 'data-fk':'subnav-'+r},
+        el('span',{html:n.icon()}), NAV_SUB_LABELS[r] || n.label); }));
+}
 
 /* modules masqués dans le menu (Paramètres › Affichage, réglage de l'appareil) ;
    Paramètres reste toujours visible. Le comparatif n'a pas de sens pour un seul navire. */
@@ -3713,7 +3779,9 @@ function iconBell(size){return icon('<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s
 function iconClipboard(size){return icon('<rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4V3h6v1"/><path d="M9 11h6M9 15h4"/>', size||17);}
 function iconKey(size){return icon('<circle cx="8" cy="15" r="4"/><path d="m10.8 12.2 9.2-9.2M17 6l3 3M14.5 8.5l2 2"/>', size);}
 function iconTimer(size){return icon('<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6M12 2v3"/>', size);}
-function iconRefresh(){return icon('<path d="M21 12a9 9 0 1 1-2.6-6.4M21 4v5h-5"/>',15);}
+function iconMap(size){return icon('<path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Z"/><path d="M9 4v14M15 6v14"/>', size||17);}
+function iconRefresh(){
+return icon('<path d="M21 12a9 9 0 1 1-2.6-6.4M21 4v5h-5"/>',15);}
 
 /* ===================== SHELL RENDER ===================== */
 function renderShellUser(){
@@ -3749,12 +3817,14 @@ function shell(){
     ),
     el('nav',{class:'nav-scroll', 'aria-label':'Navigation principale'},
       el('div',{class:'nav-group-label'},'Navigation'),
-      ...visibleNav().map(n=>el('button',{
-          class:'nav-item'+(state.route.startsWith(n.route)?' active':''),
-          'aria-current': state.route.startsWith(n.route) ? 'page' : null, 'data-fk':'nav-'+n.route,
-          onclick:()=>{location.hash=n.route; state.sidebarOpen=false;}
-        }, el('span',{html:n.icon()}), n.label)
-      )
+      ...visibleNavGroups().map(g=>{
+        const on = navGroupOf(state.route).id===g.id, n = visibleGroupRoutes(g).length;
+        return el('button',{
+          class:'nav-item'+(on?' active':''), 'aria-current': on ? 'page' : null, 'data-fk':'nav-groupe-'+g.id,
+          title: n>1 ? visibleGroupRoutes(g).map(r=>(NAV.find(x=>x.route===r)||{}).label).join(' · ') : null,
+          onclick:()=>{ location.hash = groupEntryRoute(g); state.sidebarOpen=false; }
+        }, el('span',{html:g.icon()}), g.label, n>1 ? el('span',{class:'nav-count', 'aria-hidden':'true'}, String(n)) : null);
+      })
     ),
     el('div',{class:'sidebar-foot'},
       el('div',{style:'display:flex;gap:6px;margin-bottom:8px;'},
@@ -3858,7 +3928,14 @@ function renderContent(){
 function drawContent(){
   const slot = $('#content-slot');
   if(!slot) return;
+  drawPage(slot);
+  // onglets du groupe (ex. Calendrier · Rappels) en tête de page
+  const sub = state.route.startsWith('#/autotest') ? null : subNav(state.route);
+  if(sub) slot.prepend(sub);
+}
+function drawPage(slot){
   const r = state.route;
+  if(r.startsWith('#/carte')) return viewCarte(slot);
   if(r.startsWith('#/comparatif')) return viewComparatif(slot);
   if(r.startsWith('#/calendrier')) return viewCalendrier(slot);
   if(r.startsWith('#/rappels')) return viewRappels(slot);
@@ -7335,6 +7412,302 @@ const CONSO_CSV_COLS = [
   {label:'Huile moteur (L)', get:r=>r.c.oilTotal},
 ];
 
+/* ===================== CARTE DES NAVIRES =====================
+   Carte interactive (Leaflet, fond OpenStreetMap et balisage OpenSeaMap, chargés à
+   la demande ; hors ligne ou sans réseau : schéma SVG) : ports, ports d'attache,
+   lignes de chaque navire (tracés schématiques : port de départ, points de passage,
+   port d'arrivée) et ligne du jour d'après le planning (vesselPlan.routeId).
+   Position en direct : il n'existe pas d'accès AIS gratuit et ouvert ; liens vers
+   MarineTraffic / VesselFinder par MMSI, et carte AIS VesselFinder à afficher.
+   Réglages partagés : mapPorts {items:[{id, name, lat, lng}]}, mapRoutes {items:[{id,
+   vessel, name, from, to, via:[[lat, lng]…], notes}]}, vesselInfo {items:{<navire>:{mmsi, homePort}}}. */
+const MAP_DEFAULT_BOUNDS = [[46.05, -5.25], [48.85, -1.0]]; // de La Rochelle à Morlaix (Ouessant compris)
+const DEFAULT_MMSI = {'quehan':'227981280', 'men-du':'228151010'};
+/* positions approchées des ports (modifiables dans « Ports… ») */
+const DEFAULT_MAP_PORTS = [
+  ['la-rochelle','La Rochelle',46.155,-1.152], ['saint-martin-de-re','Île de Ré – Saint-Martin',46.205,-1.366], ['les-sables','Les Sables-d’Olonne',46.495,-1.786],
+  ['port-joinville','Île d’Yeu – Port-Joinville',46.726,-2.348], ['fromentine','Fromentine',46.893,-2.141], ['herbaudiere','Noirmoutier – L’Herbaudière',47.024,-2.299],
+  ['pornic','Pornic',47.113,-2.104], ['saint-nazaire','Saint-Nazaire',47.270,-2.201], ['le-croisic','Le Croisic',47.297,-2.513], ['la-turballe','La Turballe',47.346,-2.513],
+  ['vannes','Vannes',47.645,-2.758], ['houat','Houat',47.393,-2.958], ['hoedic','Hoëdic',47.338,-2.873], ['le-palais','Belle-Île – Le Palais',47.348,-3.153],
+  ['quiberon','Quiberon – Port-Maria',47.475,-3.122], ['port-louis','Port-Louis',47.708,-3.355], ['lorient','Lorient',47.745,-3.360], ['port-tudy','Groix – Port-Tudy',47.643,-3.447],
+  ['concarneau','Concarneau',47.870,-3.917], ['glenan','Îles de Glénan',47.722,-4.000], ['benodet','Bénodet',47.873,-4.108], ['guilvinec','Le Guilvinec',47.795,-4.285],
+  ['audierne','Audierne',48.020,-4.540], ['sein','Île de Sein',48.038,-4.851], ['douarnenez','Douarnenez',48.098,-4.330], ['camaret','Camaret-sur-Mer',48.280,-4.595],
+  ['brest','Brest',48.381,-4.493], ['le-conquet','Le Conquet',48.360,-4.773], ['molene','Molène',48.397,-4.955], ['ouessant','Ouessant – Le Stiff',48.473,-5.055],
+  ['roscoff','Roscoff',48.718,-3.966], ['batz','Île de Batz',48.744,-4.010], ['morlaix','Morlaix',48.580,-3.830],
+].map(([id, name, lat, lng])=>({id, name, lat, lng}));
+function mapPorts(){ const s = setting('mapPorts'); return s && Array.isArray(s.items) ? s.items : DEFAULT_MAP_PORTS; }
+function mapPort(id){ return mapPorts().find(p=>p.id===id) || null; }
+function mapRoutes(){ const s = setting('mapRoutes'); return s && Array.isArray(s.items) ? s.items : []; }
+function saveMapRoutes(items){ saveSetting('mapRoutes', {items}); }
+function vesselInfo(v){ const s = setting('vesselInfo'); const o = (s && s.items && s.items[v]) || {}; return {mmsi: o.mmsi ?? DEFAULT_MMSI[v] ?? '', homePort: o.homePort || ''}; }
+function saveVesselInfo(v, data){ const s = setting('vesselInfo'); const items = {...((s && s.items) || {})}; items[v] = {...vesselInfo(v), ...data}; saveSetting('vesselInfo', {items}); }
+function routePoints(r){ const a = mapPort(r.from), b = mapPort(r.to); return [a ? [a.lat, a.lng] : null, ...(r.via||[]), b ? [b.lat, b.lng] : null].filter(Boolean); }
+function routeLabel(r){ return r.name || ((mapPort(r.from)||{}).name || '?')+' → '+((mapPort(r.to)||{}).name || '?'); }
+function marineTrafficUrl(mmsi){ return 'https://www.marinetraffic.com/en/ais/details/ships/mmsi:'+encodeURIComponent(mmsi); }
+function vesselFinderUrl(mmsi){ return 'https://www.vesselfinder.com/vessels/details/'+encodeURIComponent(mmsi); }
+/* ligne prévue au planning (organisation de la journée du navire) */
+function plannedRoute(v, date){ const vp = vesselPlanAt(v, date); return vp && vp.routeId ? mapRoutes().find(r=>r.id===vp.routeId) || null : null; }
+/* port reconnu dans la « position prévue » du planning (ex. « Port de Lorient », « Groix ») */
+function plannedPort(v, date){
+  const vp = vesselPlanAt(v, date);
+  if(!vp || !vp.position) return null;
+  const t = normText(vp.position);
+  return mapPorts().find(p=>String(p.name).split(/\s+[–-]\s+/).map(normText).some(k=>k.length>=3 && t.includes(k))) || null;
+}
+/* ce qui est dessiné, commun à la carte et au schéma */
+function fleetMapData(m){
+  const vessels = VESSELS.filter(v=>!m.vessel || v.key===m.vessel).map(v=>v.key);
+  const homes = {};
+  vessels.forEach(v=>{ const h = vesselInfo(v).homePort; if(h) (homes[h] = homes[h] || []).push(v); });
+  const today = {};
+  vessels.forEach(v=>{ const r = plannedRoute(v, m.date); today[v] = {route:r, port: r ? null : plannedPort(v, m.date), plan:vesselPlanAt(v, m.date)}; });
+  const routes = mapRoutes().filter(r=>vessels.includes(r.vessel)).map(r=>({r, pts:routePoints(r), color:vesselColor(r.vessel)||'#2C6BA0', today: !!(today[r.vessel].route && today[r.vessel].route.id===r.id)}))
+    .filter(x=>x.pts.length>=2);
+  const markers = vessels.map(v=>{
+    const t = today[v];
+    let at = null, where = '';
+    if(t.route){ const pts = routePoints(t.route); at = pts[Math.floor(pts.length/2)] || null; if(pts.length===2) at = [(pts[0][0]+pts[1][0])/2, (pts[0][1]+pts[1][1])/2]; where = 'ligne '+routeLabel(t.route); }
+    else if(t.port){ at = [t.port.lat, t.port.lng]; where = t.port.name; }
+    return at ? {v, at, where} : null;
+  }).filter(Boolean);
+  return {vessels, homes, today, routes, markers, ports:mapPorts()};
+}
+
+let leafletLib = null;
+function loadLeaflet(){
+  if(window.L && window.L.map) return Promise.resolve(window.L);
+  if(TEST_MODE || !isOnline()) return Promise.reject(new Error('hors ligne'));
+  if(!leafletLib) leafletLib = new Promise((resolve, reject)=>{
+    document.head.appendChild(el('link',{rel:'stylesheet', href:'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css'}));
+    const s = el('script',{src:'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js', async:''});
+    s.onload = ()=>window.L ? resolve(window.L) : reject(new Error('Leaflet'));
+    s.onerror = ()=>{ leafletLib = null; reject(new Error('Leaflet')); };
+    document.head.appendChild(s);
+  });
+  return leafletLib;
+}
+/* clic sur la carte : point de passage (tracé d'une ligne) ou nouveau port */
+function fleetMapClick(m, lat, lng){
+  lat = Math.round(lat*10000)/10000; lng = Math.round(lng*10000)/10000;
+  if(m.draw){ m.draw.points.push([lat, lng]); renderContent(); return; }
+  if(m.placePort){ m.placePort = false; openPortModal(null, {lat, lng}); }
+}
+function drawLeafletMap(box, m){
+  const L = window.L;
+  box.innerHTML = '';
+  const map = L.map(box, {zoomSnap:0.5, worldCopyJump:false});
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:18, attribution:'© contributeurs OpenStreetMap'}).addTo(map);
+  L.tileLayer('https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png', {maxZoom:18, attribution:'balisage © OpenSeaMap'}).addTo(map);
+  if(m.view) map.setView(m.view.c, m.view.z); else map.fitBounds(MAP_DEFAULT_BOUNDS);
+  map.on('click', e=>fleetMapClick(m, e.latlng.lat, e.latlng.lng));
+  const d = fleetMapData(m);
+  d.routes.forEach(x=>L.polyline(x.pts, {color:x.color, weight:x.today ? 6 : 3, opacity:x.today ? 0.95 : 0.7, dashArray:x.today ? null : '7 6'})
+    .bindTooltip(vesselName(x.r.vessel)+' : '+routeLabel(x.r)+(x.today ? ' (prévue ce jour)' : ''), {sticky:true}).addTo(map)
+    .on('click', ev=>{ if(m.draw || m.placePort) return; L.DomEvent.stopPropagation(ev); openRouteModal(x.r); }));
+  if(m.draw){ const r = mapRoutes().find(x=>x.id===m.draw.routeId) || m.draw.route; const pts = routePoints({...r, via:m.draw.points});
+    if(pts.length>=2) L.polyline(pts, {color:'#CE1126', weight:4}).addTo(map);
+    m.draw.points.forEach(p=>L.circleMarker(p, {radius:5, color:'#CE1126', fillOpacity:1}).addTo(map)); }
+  d.ports.forEach(p=>{
+    const home = d.homes[p.id];
+    L.circleMarker([p.lat, p.lng], {radius:home ? 8 : 4, color:home ? vesselColor(home[0]) : '#0A2540', weight:2, fillColor:home ? '#fff' : '#2C6BA0', fillOpacity:0.9})
+      .bindTooltip(p.name+(home ? ' — port d’attache : '+home.map(vesselName).join(', ') : ''), {permanent:!!home, direction:'right', className:home ? 'map-home-label' : ''}).addTo(map);
+  });
+  d.markers.forEach(k=>L.marker(k.at, {icon:L.divIcon({className:'map-vessel', html:'<span style="--c:'+(vesselColor(k.v)||'#2C6BA0')+'">'+esc(vesselName(k.v))+'</span>', iconSize:null})})
+    .bindTooltip(vesselName(k.v)+' — prévu le '+fmtDate(m.date)+' : '+k.where).addTo(map));
+  // taille définitive connue après l'affichage : recadrer La Rochelle → Morlaix, puis retenir la vue choisie
+  setTimeout(()=>{
+    map.invalidateSize();
+    if(!m.view) map.fitBounds(MAP_DEFAULT_BOUNDS);
+    map.on('moveend', ()=>{ const c = map.getCenter(); m.view = {c:[c.lat, c.lng], z:map.getZoom()}; });
+  }, 50);
+}
+/* schéma sans fond de carte (hors ligne) : même contenu, projection simple */
+function drawSvgMap(box, m){
+  const [[la0, lo0], [la1, lo1]] = MAP_DEFAULT_BOUNDS;
+  const k = Math.cos((la0+la1)/2*Math.PI/180), W = 900, H = Math.round(W*(la1-la0)/((lo1-lo0)*k));
+  const X = lng=>(lng-lo0)/(lo1-lo0)*W, Y = lat=>(la1-lat)/(la1-la0)*H;
+  const d = fleetMapData(m);
+  let s = '<rect width="'+W+'" height="'+H+'" class="map-sea"/>';
+  d.routes.forEach(x=>{ s += '<polyline points="'+x.pts.map(p=>X(p[1]).toFixed(1)+','+Y(p[0]).toFixed(1)).join(' ')+'" fill="none" stroke="'+x.color+'" stroke-width="'+(x.today ? 5 : 2.5)+'"'+(x.today ? '' : ' stroke-dasharray="7 6"')+'><title>'+esc(vesselName(x.r.vessel)+' : '+routeLabel(x.r))+'</title></polyline>'; });
+  if(m.draw){ const r = mapRoutes().find(x=>x.id===m.draw.routeId) || m.draw.route; const pts = routePoints({...r, via:m.draw.points});
+    if(pts.length>=2) s += '<polyline points="'+pts.map(p=>X(p[1]).toFixed(1)+','+Y(p[0]).toFixed(1)).join(' ')+'" fill="none" stroke="#CE1126" stroke-width="3"/>'; }
+  d.ports.forEach(p=>{ const home = d.homes[p.id];
+    s += '<circle cx="'+X(p.lng).toFixed(1)+'" cy="'+Y(p.lat).toFixed(1)+'" r="'+(home ? 6 : 3)+'" class="map-port'+(home ? ' map-port-home' : '')+'"'+(home ? ' style="stroke:'+vesselColor(home[0])+'"' : '')+'><title>'+esc(p.name)+'</title></circle>';
+    s += '<text x="'+(X(p.lng)+7).toFixed(1)+'" y="'+(Y(p.lat)+4).toFixed(1)+'" class="map-port-label'+(home ? ' map-port-home' : '')+'">'+esc(p.name)+'</text>'; });
+  d.markers.forEach(k=>{ s += '<g class="map-vessel-svg"><rect x="'+(X(k.at[1])-4).toFixed(1)+'" y="'+(Y(k.at[0])-22).toFixed(1)+'" width="'+(vesselName(k.v).length*7.5+10)+'" height="18" rx="9" fill="'+(vesselColor(k.v)||'#2C6BA0')+'"/><text x="'+(X(k.at[1])+1).toFixed(1)+'" y="'+(Y(k.at[0])-9).toFixed(1)+'">'+esc(vesselName(k.v))+'</text></g>'; });
+  box.innerHTML = '';
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 '+W+' '+H); svg.setAttribute('class', 'map-schema'); svg.setAttribute('role', 'img');
+  svg.setAttribute('aria-label', 'Schéma des ports et des lignes, de La Rochelle à Morlaix');
+  svg.innerHTML = s;
+  svg.addEventListener('click', e=>{ const rb = svg.getBoundingClientRect(); const x = (e.clientX-rb.left)*W/rb.width, y = (e.clientY-rb.top)*H/rb.height;
+    fleetMapClick(m, la1 - y/H*(la1-la0), lo0 + x/W*(lo1-lo0)); });
+  box.appendChild(svg);
+  box.appendChild(el('div',{class:'hint map-offline-note'}, 'Schéma sans fond de carte (hors ligne ou carte indisponible). Positions approchées.'));
+}
+
+function viewCarte(slot){
+  slot.innerHTML = '';
+  const m = state._map = state._map || {date:todayISO(), vessel:''};
+  const shift = n=>{ m.date = addDays(m.date, n); renderContent(); };
+  const vesSel = el('select',{class:'select', 'aria-label':'Navire', 'data-fk':'carte-navire', onchange:e=>{ m.vessel = e.target.value; renderContent(); }},
+    el('option',{value:''},'Tous les navires'), ...VESSELS.map(v=>el('option',{value:v.key}, v.name)));
+  vesSel.value = m.vessel;
+  slot.appendChild(el('div',{class:'toolbar'},
+    el('button',{class:'btn btn-ghost btn-sm', type:'button', 'aria-label':'Jour précédent', onclick:()=>shift(-1)}, '←'),
+    el('input',{type:'date', class:'select', 'aria-label':'Jour affiché', 'data-fk':'carte-date', value:m.date, onchange:e=>{ if(e.target.value){ m.date = e.target.value; renderContent(); } }}),
+    el('button',{class:'btn btn-ghost btn-sm', type:'button', 'aria-label':'Jour suivant', onclick:()=>shift(1)}, '→'),
+    el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>{ m.date = todayISO(); renderContent(); }}, 'Aujourd’hui'),
+    vesSel, el('div',{style:'flex:1;'}),
+    el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'carte-vue-defaut', onclick:()=>{ m.view = null; renderContent(); }}, 'La Rochelle → Morlaix'),
+    canConfigure() ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'carte-ports', onclick:openPortsModal}, 'Ports…') : null,
+    canConfigure() ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'carte-navires', onclick:openVesselInfoModal}, 'MMSI et ports d’attache…') : null,
+    canEdit() ? el('button',{class:'btn btn-accent', type:'button', 'data-fk':'carte-nouvelle-ligne', onclick:()=>openRouteModal(null, {vessel:m.vessel||state.activeVessel})}, el('span',{html:iconPlus()}), 'Nouvelle ligne') : null));
+  if(m.draw){
+    const r = mapRoutes().find(x=>x.id===m.draw.routeId) || m.draw.route || {};
+    slot.appendChild(el('div',{class:'banner', role:'status', 'data-fk':'carte-trace'},
+      el('div',{style:'flex:1;'}, 'Tracé de la ligne « '+routeLabel(r)+' » : cliquez sur la carte, dans l’ordre, les points de passage entre le port de départ et le port d’arrivée ('+m.draw.points.length+' point(s)).'),
+      el('button',{class:'btn btn-primary btn-sm', type:'button', 'data-fk':'trace-enregistrer', onclick:()=>{ saveRouteVia(m.draw.routeId, m.draw.points); m.draw = null; renderContent(); }}, 'Enregistrer le tracé'),
+      el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>{ m.draw.points.pop(); renderContent(); }}, 'Retirer le dernier point'),
+      el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>{ m.draw = null; renderContent(); }}, 'Annuler')));
+  }else if(m.placePort){
+    slot.appendChild(el('div',{class:'banner', role:'status'}, el('div',{style:'flex:1;'}, 'Cliquez sur la carte à l’emplacement du nouveau port.'),
+      el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>{ m.placePort = false; renderContent(); }}, 'Annuler')));
+  }
+  const mapBox = el('div',{class:'fleet-map'+(m.draw || m.placePort ? ' map-picking' : ''), 'data-fk':'carte'});
+  const side = el('div',{class:'fleet-side'});
+  slot.appendChild(el('div',{class:'fleet-layout'}, el('div',{class:'card fleet-map-card'}, mapBox), side));
+  loadLeaflet().then(()=>{ if(mapBox.isConnected) drawLeafletMap(mapBox, m); }).catch(()=>drawSvgMap(mapBox, m));
+  if(!window.L) drawSvgMap(mapBox, m); // en attendant le chargement de la carte
+
+  // un encart par navire : position en direct (liens AIS), port d'attache, organisation du jour, ligne du jour
+  const data = fleetMapData(m);
+  data.vessels.forEach(v=>{
+    const info = vesselInfo(v), t = data.today[v], home = mapPort(info.homePort);
+    const routes = mapRoutes().filter(r=>r.vessel===v);
+    const card = el('div',{class:'card fleet-vessel', style:'--c:'+(vesselColor(v)||'#2C6BA0'), 'data-fk':'carte-encart-'+v},
+      el('div',{class:'fleet-vessel-head'}, el('strong',{}, vesselName(v)), info.mmsi ? el('span',{class:'hint', style:'margin:0;'}, 'MMSI '+info.mmsi) : el('span',{class:'hint', style:'margin:0;'}, 'MMSI non renseigné')),
+      info.mmsi ? el('div',{class:'fleet-links'},
+        el('a',{class:'btn btn-ghost btn-sm', href:marineTrafficUrl(info.mmsi), target:'_blank', rel:'noopener noreferrer', 'data-fk':'marinetraffic-'+v}, el('span',{html:iconExternal()}), 'MarineTraffic'),
+        el('a',{class:'btn btn-ghost btn-sm', href:vesselFinderUrl(info.mmsi), target:'_blank', rel:'noopener noreferrer'}, el('span',{html:iconExternal()}), 'VesselFinder'),
+        el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'ais-'+v, onclick:()=>openLiveAisModal(v)}, 'Position en direct')) : null,
+      el('div',{class:'desc'}, 'Port d’attache : '+(home ? home.name : '—')),
+      el('div',{class:'desc'}, 'Prévu le '+fmtDate(m.date)+' : '+(t.plan ? [t.plan.position, t.plan.operations].filter(Boolean).join(' — ') || '—' : 'non renseigné au planning')),
+      routes.length && canEdit() ? (()=>{
+        const sel = el('select',{class:'select', 'aria-label':'Ligne du '+fmtDate(m.date)+' — '+vesselName(v), 'data-fk':'ligne-du-jour-'+v, onchange:e=>{
+          const rid = e.target.value, r = mapRoutes().find(x=>x.id===rid), vp = vesselPlanAt(v, m.date);
+          withUndo('Ligne du '+fmtDate(m.date), ()=>{
+            // la position reprend le nom de la ligne, sauf si une autre position a été saisie
+            const prev = vp && vp.routeId && mapRoutes().find(x=>x.id===vp.routeId);
+            const pos = vp && vp.position && !(prev && vp.position===routeLabel(prev)) ? vp.position : (r ? routeLabel(r) : '');
+            setVesselPlan(v, m.date, pos, vp ? vp.operations : '', rid);
+            logHistory('vesselPlan', 'vp:'+v+':'+m.date, vesselName(v)+' — '+fmtDate(m.date), 'organisation modifiée', v, 'Ligne : '+(r ? routeLabel(r) : '—'));
+          }).then(()=>renderContent());
+        }}, el('option',{value:''}, '— pas de ligne prévue —'), ...routes.map(r=>el('option',{value:r.id}, routeLabel(r))));
+        sel.value = t.route ? t.route.id : '';
+        return el('div',{class:'field', style:'margin:8px 0 0;'}, el('label',{}, 'Ligne prévue ce jour (planning)'), sel);
+      })() : null,
+      el('div',{class:'fleet-routes'}, routes.length ? routes.map(r=>el('button',{type:'button', class:'link-btn', 'data-fk':'ligne-'+r.id, onclick:()=>openRouteModal(r)}, routeLabel(r)+' ('+((r.via||[]).length ? (r.via.length+' point(s) de passage') : 'tracé direct')+')'))
+        : [el('span',{class:'hint', style:'margin:0;'}, 'Aucune ligne pour ce navire.')]));
+    side.appendChild(card);
+  });
+  side.appendChild(el('div',{class:'hint'}, 'Positions en direct : MarineTraffic et VesselFinder (par MMSI), ouverts dans un nouvel onglet. Les lignes sont des tracés schématiques ; la ligne du jour vient du planning (Planning › organisation de la journée).'));
+}
+function saveRouteVia(id, points){
+  const items = mapRoutes().map(r=>r.id===id ? {...r, via:points.map(p=>[p[0], p[1]])} : r);
+  const r = items.find(x=>x.id===id);
+  withUndo('Tracé de la ligne', ()=>{ saveMapRoutes(items); logHistory('settings', 'mapRoutes', 'Ligne '+(r ? routeLabel(r) : ''), 'modifié', r ? r.vessel : null, points.length+' point(s) de passage'); });
+  toast('Tracé enregistré');
+}
+function openRouteModal(r, prefill){
+  const isEdit = !!r;
+  const base = r || prefill || {};
+  const ports = mapPorts().slice().sort((a,b)=>a.name.localeCompare(b.name,'fr')).map(p=>({v:p.id, l:p.name}));
+  const usedDays = isEdit ? state.vesselPlan.filter(x=>x.routeId===r.id).length : 0;
+  const body = el('div',{},
+    field('Navire','vessel','select', VESSELS.map(v=>({v:v.key, l:v.name})), base.vessel || state.activeVessel),
+    fieldRow(
+      field('Port de départ','from','select', [{v:'', l:'—'}, ...ports], base.from||vesselInfo(base.vessel||state.activeVessel).homePort||''),
+      field('Port d’arrivée','to','select', [{v:'', l:'—'}, ...ports], base.to||'')),
+    field('Nom de la ligne','name','text', null, base.name||'', 'facultatif, ex. « Lorient – Groix », « Desserte Houat / Hoëdic »'),
+    field('Notes','notes','textarea', null, base.notes||'', 'horaires habituels, escales, saison…'),
+    el('div',{class:'hint'}, (base.via||[]).length ? (base.via.length+' point(s) de passage tracés.') : 'Tracé direct entre les deux ports : « Tracer sur la carte » pour ajouter des points de passage.'),
+    isEdit ? el('div',{class:'hint'}, usedDays ? 'Prévue '+usedDays+' jour(s) au planning.' : 'Pas encore prévue au planning.') : null);
+  openModal({title:isEdit ? 'Ligne — '+routeLabel(r) : 'Nouvelle ligne', body, readOnly:!canEdit(), submitLabel: 'Enregistrer',
+    validate: d=>!d.from || !d.to ? 'Choisissez le port de départ et le port d’arrivée.' : null,
+    onDelete: isEdit ? async ()=>{ saveMapRoutes(mapRoutes().filter(x=>x.id!==r.id)); logHistory('settings', 'mapRoutes', 'Ligne '+routeLabel(r), 'supprimé', r.vessel); toast('Ligne supprimée'); } : null,
+    deleteMessage: isEdit ? 'Supprimer la ligne « '+routeLabel(r)+' » ?'+(usedDays ? ' Les '+usedDays+' jour(s) du planning gardent leur position, sans tracé.' : '') : null,
+    onSubmit: async d=>{
+      const rec = {id: isEdit ? r.id : 'l-'+uid(), vessel:d.vessel, from:d.from, to:d.to, name:d.name.trim(), notes:d.notes.trim(), via: isEdit ? (r.via||[]) : []};
+      saveMapRoutes(isEdit ? mapRoutes().map(x=>x.id===r.id ? rec : x) : [...mapRoutes(), rec]);
+      logHistory('settings', 'mapRoutes', 'Ligne '+routeLabel(rec), isEdit ? 'modifié' : 'créé', rec.vessel, vesselName(rec.vessel));
+      toast(isEdit ? 'Ligne mise à jour' : 'Ligne créée');
+      if(d.tracer==='1'){ const m = state._map = state._map || {date:todayISO(), vessel:''}; m.draw = {routeId:rec.id, points:(rec.via||[]).slice()}; }
+    }});
+  // « Enregistrer et tracer sur la carte » : enregistre puis passe la carte en mode tracé
+  const primary = $$('.modal .modal-actions .btn-primary').pop();
+  if(primary && canEdit()){
+    const hidden = el('input',{type:'hidden', name:'tracer', value:''});
+    body.appendChild(hidden);
+    primary.parentNode.insertBefore(el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'ligne-tracer', onclick:()=>{ hidden.value = '1'; primary.click(); }}, 'Enregistrer et tracer sur la carte'), primary);
+  }
+}
+function openPortsModal(){
+  let items = mapPorts().map(p=>({...p}));
+  const used = id=>mapRoutes().filter(r=>r.from===id || r.to===id).length + VESSELS.filter(v=>vesselInfo(v.key).homePort===id).length;
+  const box = el('div',{class:'ports-list'});
+  const num = (p, k)=>el('input',{type:'number', step:'any', inputmode:'decimal', class:'select', style:'width:96px;', 'aria-label':(k==='lat' ? 'Latitude' : 'Longitude')+' de '+p.name, value:p[k], oninput:e=>{ p[k] = Number(e.target.value); }});
+  const draw = ()=>{
+    box.innerHTML = '';
+    items.slice().sort((a,b)=>b.lat-a.lat).forEach(p=>box.appendChild(el('div',{class:'settings-row', style:'gap:6px;'},
+      el('input',{type:'text', class:'select', style:'flex:1;min-width:150px;', 'aria-label':'Nom du port', value:p.name, oninput:e=>{ p.name = e.target.value; }}),
+      num(p, 'lat'), num(p, 'lng'),
+      el('button',{class:'btn-danger-text', type:'button', disabled: used(p.id) ? '' : null, title: used(p.id) ? 'utilisé par une ligne ou comme port d’attache' : null, onclick:()=>{ items = items.filter(x=>x!==p); draw(); }}, 'Retirer'))));
+  };
+  draw();
+  openModal({title:'Ports de la carte', wide:true, readOnly:!canConfigure(),
+    body: el('div',{}, el('div',{class:'hint', style:'margin:0 0 8px;'}, 'Positions en degrés décimaux (latitude nord, longitude : négative à l’ouest de Greenwich). Positions par défaut approchées, de La Rochelle à Morlaix.'),
+      el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'port-placer', onclick:()=>{ closeAllModals(); const m = state._map = state._map || {date:todayISO(), vessel:''}; m.placePort = true; renderContent(); }}, 'Ajouter un port en cliquant sur la carte'),
+      box),
+    validate: ()=>items.some(p=>!String(p.name).trim() || !(p.lat>=-90 && p.lat<=90) || !(p.lng>=-180 && p.lng<=180)) ? 'Chaque port doit avoir un nom et une position valide.' : null,
+    onSubmit: async ()=>{ saveSetting('mapPorts', {items:items.map(p=>({id:p.id, name:String(p.name).trim(), lat:Number(p.lat), lng:Number(p.lng)}))}); logHistory('settings', 'mapPorts', 'Ports de la carte', 'modifié', null, items.length+' port(s)'); toast('Ports enregistrés'); }});
+}
+function openPortModal(p, prefill){
+  const base = p || prefill || {};
+  const body = el('div',{}, field('Nom du port','name','text', null, base.name||''),
+    fieldRow(field('Latitude','lat','number', null, base.lat ?? ''), field('Longitude','lng','number', null, base.lng ?? '')));
+  openModal({title:'Nouveau port', body, readOnly:!canConfigure(),
+    validate: d=>!d.name.trim() ? 'Le nom du port est obligatoire.' : (isNaN(parseFloat(d.lat)) || isNaN(parseFloat(d.lng))) ? 'Position invalide.' : mapPorts().some(x=>normText(x.name)===normText(d.name)) ? 'Ce port existe déjà.' : null,
+    onSubmit: async d=>{ saveSetting('mapPorts', {items:[...mapPorts(), {id:'p-'+uid(), name:d.name.trim(), lat:parseFloat(d.lat), lng:parseFloat(d.lng)}]}); logHistory('settings', 'mapPorts', 'Port '+d.name.trim(), 'créé', null); toast('Port ajouté'); }});
+}
+function openVesselInfoModal(){
+  const ports = [{v:'', l:'—'}, ...mapPorts().slice().sort((a,b)=>a.name.localeCompare(b.name,'fr')).map(p=>({v:p.id, l:p.name}))];
+  const body = el('div',{}, el('div',{class:'hint', style:'margin:0 0 8px;'}, 'Le MMSI (9 chiffres) sert aux liens de position en direct (MarineTraffic, VesselFinder).'),
+    ...VESSELS.map(v=>fieldRow(field(v.name+' — MMSI','mmsi-'+v.key,'text', null, vesselInfo(v.key).mmsi), field('Port d’attache','home-'+v.key,'select', ports, vesselInfo(v.key).homePort))));
+  openModal({title:'Navires : MMSI et ports d’attache', body, wide:true, readOnly:!canConfigure(),
+    validate: d=>{ const bad = VESSELS.find(v=>d['mmsi-'+v.key].trim() && !/^\d{9}$/.test(d['mmsi-'+v.key].trim())); return bad ? 'MMSI de '+bad.name+' : 9 chiffres.' : null; },
+    onSubmit: async d=>{
+      const s = setting('vesselInfo'); const items = {...((s && s.items) || {})};
+      VESSELS.forEach(v=>{ items[v.key] = {mmsi:d['mmsi-'+v.key].trim(), homePort:d['home-'+v.key]}; });
+      saveSetting('vesselInfo', {items});
+      logHistory('settings', 'vesselInfo', 'MMSI et ports d’attache', 'modifié', null, VESSELS.map(v=>v.name+' '+(items[v.key].mmsi||'—')).join(' · '));
+      toast('Navires enregistrés');
+    }});
+}
+/* position en direct : carte AIS gratuite de VesselFinder, centrée sur le navire */
+function openLiveAisModal(v){
+  const info = vesselInfo(v);
+  const frame = el('iframe',{class:'ais-frame', title:'Position AIS en direct — '+vesselName(v), loading:'lazy', referrerpolicy:'no-referrer-when-downgrade'});
+  frame.srcdoc = '<!doctype html><meta charset="utf-8"><style>html,body{margin:0;height:100%}</style>'
+    + '<script>var width="100%";var height="440";var latitude="47.5";var longitude="-3.4";var zoom="8";var names=true;var mmsi="'+String(info.mmsi).replace(/\D/g,'')+'";var show_track=true;<\/script>'
+    + '<script src="https://www.vesselfinder.com/aismap.js"><\/script>';
+  openModal({title:'Position en direct — '+vesselName(v)+' (MMSI '+info.mmsi+')', infoOnly:true, wide:true, body:el('div',{},
+    isOnline() && !TEST_MODE ? frame : el('div',{class:'hint'}, 'Hors ligne : position en direct indisponible.'),
+    el('div',{class:'hint', style:'margin-top:8px;'}, 'Carte AIS VesselFinder (service externe gratuit, position transmise par l’AIS du navire). Si elle ne s’affiche pas : ',
+      el('a',{href:marineTrafficUrl(info.mmsi), target:'_blank', rel:'noopener noreferrer'}, 'ouvrir sur MarineTraffic'), ' ou ',
+      el('a',{href:vesselFinderUrl(info.mmsi), target:'_blank', rel:'noopener noreferrer'}, 'sur VesselFinder'), '.'))});
+}
+
 /* ===================== DOCUMENTATION TECHNIQUE =====================
    Manuels, schémas, procédures… rattachés à un navire (ou communs à la flotte)
    et, si possible, à un élément du navire : ils sont alors proposés dans la fiche
@@ -8814,11 +9187,13 @@ function setCrewPlan(crewId, date, code, note){
   else{ const now = new Date().toISOString(); state.crewPlan.push({id, ...data, createdAt:now, updatedAt:now, updatedBy:state.me.name||null}); scheduleSave(); }
   return id;
 }
-function setVesselPlan(vessel, date, position, operations){
+/* routeId : ligne de la carte des navires prévue ce jour-là (absent : inchangé) */
+function setVesselPlan(vessel, date, position, operations, routeId){
   const id = 'vp:'+(vessel||'sedentaire')+':'+date;
   const rec = state.vesselPlan.find(r=>r.id===id);
-  if(!position && !operations){ if(rec) deleteDoc('vesselPlan','vesselPlan', id); return null; }
-  const data = {vessel:vessel||'', date, position:position||'', operations:operations||''};
+  const route = routeId===undefined ? (rec && rec.routeId) || '' : routeId || '';
+  if(!position && !operations && !route){ if(rec) deleteDoc('vesselPlan','vesselPlan', id); return null; }
+  const data = {vessel:vessel||'', date, position:position||'', operations:operations||'', routeId:route};
   if(rec) updateDoc('vesselPlan','vesselPlan', id, data);
   else{ const now = new Date().toISOString(); state.vesselPlan.push({id, ...data, createdAt:now, updatedAt:now, updatedBy:state.me.name||null}); scheduleSave(); }
   return id;
@@ -8921,6 +9296,8 @@ function viewPlanningDaily(slot, p){
           title: r ? [r.position, r.operations].filter(Boolean).join('\n') : '', onclick:()=>openVesselPlanModal(v, d)},
           dock ? el('div',{class:'pj-dock'}, 'Arrêt : '+(dock.titre||'')) : null,
           r && r.position ? el('div',{class:'pj-pos'}, r.position) : null,
+          r && r.routeId && mapRoutes().some(x=>x.id===r.routeId) ? el('div',{class:'pj-route', title:'Ligne de la carte'}, '⛴ '+routeLabel(mapRoutes().find(x=>x.id===r.routeId))) : null,
+
           r && r.operations ? el('div',{class:'pj-opstext'}, r.operations) : null));
     }), el('td',{class:'pj-tot'}))));
   slot.appendChild(el('div',{class:'card plan-card'},
@@ -8948,13 +9325,17 @@ function openVesselPlanModal(vessel, date){
   $('input', posField).setAttribute('list', listId);
   posField.appendChild(el('datalist',{id:listId}, ...known.map(k=>el('option',{value:k}))));
   const aboard = vessel ? crewOnBoardPlan(vessel, date) : [];
-  const body = el('div',{}, posField,
+  const routes = vessel ? mapRoutes().filter(x=>x.vessel===vessel) : [];
+  const routeField = routes.length ? field('Ligne (carte des navires)','routeId','select', [{v:'', l:'— aucune —'}, ...routes.map(x=>({v:x.id, l:routeLabel(x)}))], r ? r.routeId||'' : '', 'tracé affiché sur la carte ce jour-là') : null;
+  if(routeField) $('select', routeField).addEventListener('change', e=>{ const x = routes.find(y=>y.id===e.target.value), pos = $('input[name=position]', posField); if(x && !pos.value.trim()) pos.value = routeLabel(x); });
+  const body = el('div',{}, posField, routeField,
     field(vessel ? 'Opérations de la journée' : 'Informations','operations','textarea', null, r ? r.operations : '', vessel ? 'horaires, chargements, rotations, escales…' : 'congés, réunions, visites…'),
     vessel ? el('div',{class:'hint'}, aboard.length ? 'À bord (planning) : '+aboard.map(crewFullName).join(', ') : 'Aucun marin au planning ce jour-là.') : null);
   openModal({title:planVesselName(vessel)+' — '+WEEKDAYS_FR[new Date(date+'T12:00:00').getDay()]+' '+fmtDate(date), body, readOnly: !canEdit(),
     onSubmit: async d=>{
-      setVesselPlan(vessel, date, d.position.trim(), d.operations.trim());
-      logHistory('vesselPlan', 'vp:'+(vessel||'sedentaire')+':'+date, planVesselName(vessel)+' — '+fmtDate(date), 'organisation modifiée', vessel||null, [d.position.trim(), d.operations.trim()].filter(Boolean).join(' · ').slice(0, 200));
+      setVesselPlan(vessel, date, d.position.trim(), d.operations.trim(), d.routeId===undefined ? undefined : d.routeId);
+      const rt = d.routeId && mapRoutes().find(x=>x.id===d.routeId);
+      logHistory('vesselPlan', 'vp:'+(vessel||'sedentaire')+':'+date, planVesselName(vessel)+' — '+fmtDate(date), 'organisation modifiée', vessel||null, [d.position.trim(), d.operations.trim(), rt ? 'ligne '+routeLabel(rt) : ''].filter(Boolean).join(' · ').slice(0, 200));
       toast('Organisation enregistrée');
     }});
 }
@@ -10710,7 +11091,7 @@ function exportSpecPdf(spec){ printSheet(buildExportSheet(spec)); }
    APP_BUILD est inscrit à la publication (tools/preparer-deploiement.ps1) :
    « aaaammjj-hhmm-empreinte ». Fichier ouvert en local : version non numérotée.
    La recherche de mise à jour lit version.json sur le site publié. */
-const APP_BUILD = '20261024-1345-b4ebbc64b4e3';
+const APP_BUILD = '20261024-1400-e9b8479c3089';
 function appBuildInfo(build){
   const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(?:-(\w+))?/.exec(build||'');
   return m ? {build, date:m[1]+'-'+m[2]+'-'+m[3], time:m[4]+':'+m[5], label:m[3]+'/'+m[2]+'/'+m[1]+' à '+m[4]+'h'+m[5]} : null;
@@ -14495,14 +14876,16 @@ autotest('Affichage des menus', 'modules masqués dans le menu, Paramètres touj
   expect.ok(box && box.checked, 'coché par défaut');
   expect.ok($('#content-slot [data-fk="module-parametres"]').disabled, 'Paramètres non masquable');
   box.checked = false; box.dispatchEvent(new Event('change'));
-  expect.ok(!$('.sidebar [data-fk="nav-#/arrets"]'), 'retiré du menu');
-  expect.ok($('.sidebar [data-fk="nav-#/entretien"]') && $('.sidebar [data-fk="nav-#/parametres"]'));
+  state.route = '#/entretien'; render();
+  expect.ok(!$('#content-slot [data-fk="subnav-#/arrets"]') && $('#content-slot [data-fk="subnav-#/defauts"]'), 'retiré des onglets de Maintenance');
+  expect.ok($('.sidebar [data-fk="nav-groupe-maintenance"]') && $('.sidebar [data-fk="nav-groupe-parametres"]'));
   expect.equal(JSON.parse(prefStore.getItem('sw_nav_hidden')).join(), '#/arrets');
   state.route = '#/arrets'; render();
   expect.ok($('#content-slot .toolbar'), 'toujours accessible par son adresse');
   state.route = '#/parametres'; render();
   $('#content-slot [data-fk="modules-tous"]').click();
-  expect.ok($('.sidebar [data-fk="nav-#/arrets"]'), 'réaffiché');
+  state.route = '#/entretien'; render();
+  expect.ok($('#content-slot [data-fk="subnav-#/arrets"]'), 'réaffiché');
 });
 autotest('Affichage des menus', 'un seul navire : onglets, filtres et listes de toute la flotte limités à ce navire', async ()=>{
   const t = todayISO();
@@ -14520,7 +14903,7 @@ autotest('Affichage des menus', 'un seul navire : onglets, filtres et listes de 
   expect.equal(VESSELS.map(v=>v.key).join(), 'viga');
   expect.equal(state.activeVessel, 'viga');
   expect.equal(vesselName('men-du'), 'Men Du', 'noms des autres navires toujours connus');
-  expect.ok(!$('.sidebar [data-fk="nav-#/comparatif"]'), 'comparatif masqué');
+  expect.ok(!visibleNav().some(n=>n.route==='#/comparatif'), 'comparatif masqué');
   state.route = '#/entretien'; render();
   expect.equal($$('.tab', $('#content-slot .tabs')).map(b=>b.textContent).join(), 'Viga');
   expect.equal(reminderItems(7).map(i=>i.label).join(), 'Job Viga', 'rappels');
@@ -14538,10 +14921,94 @@ autotest('Affichage des menus', 'un seul navire : onglets, filtres et listes de 
   const sel2 = $('#content-slot [data-fk="navire-unique"]');
   sel2.value = ''; sel2.dispatchEvent(new Event('change'));
   expect.equal(VESSELS.length, ALL_VESSELS.length);
-  expect.ok($('.sidebar [data-fk="nav-#/comparatif"]'));
+  expect.ok(visibleNav().some(n=>n.route==='#/comparatif'));
 });
 
+
+autotest('Affichage des menus', 'menu regroupé : 11 entrées, chaque module dans un groupe, onglets du groupe, dernière page retenue', async ()=>{
+  state.route = '#/dashboard'; state._groupLast = {}; render();
+  expect.equal($$('.sidebar .nav-item').length, NAV_GROUPS.length, 'entrées du menu');
+  expect.ok(NAV_GROUPS.length<=11 && NAV.length>=NAV_GROUPS.length*2, 'menu deux fois plus court');
+  NAV.forEach(n=>expect.equal(NAV_GROUPS.filter(g=>g.routes.includes(n.route)).length, 1, 'un seul groupe pour '+n.route));
+  expect.ok(['#/calendrier','#/rappels'].every(r=>NAV_GROUPS.find(g=>g.id==='agenda').routes.includes(r)), 'calendrier et rappels ensemble');
+  expect.ok(NAV_GROUPS.find(g=>g.id==='parametres').routes.includes('#/profils') && NAV_GROUPS.find(g=>g.id==='carburant').routes.includes('#/consommations') && NAV_GROUPS.find(g=>g.id==='equipage').routes.includes('#/heures'));
+  state.route = '#/rappels'; render();
+  expect.ok($('.sidebar [data-fk="nav-groupe-agenda"]').classList.contains('active'), 'groupe actif');
+  const sub = $('#content-slot .subnav');
+  expect.ok(sub && sub === $('#content-slot').firstElementChild, 'onglets en tête de page');
+  expect.equal($$('.subnav-item', sub).map(a=>a.textContent).join('|'), 'Calendrier|Rappels');
+  expect.ok($('[data-fk="subnav-#/rappels"]', sub).classList.contains('active'));
+  state.route = '#/dashboard'; render();
+  expect.equal(groupEntryRoute(NAV_GROUPS.find(g=>g.id==='agenda')), '#/rappels', 'le groupe rouvre la dernière page visitée');
+  expect.equal(groupEntryRoute(NAV_GROUPS.find(g=>g.id==='maintenance')), '#/entretien', 'sinon la première');
+  state.route = '#/certificats-marins'; render();
+  expect.ok($('.sidebar [data-fk="nav-groupe-equipage"]').classList.contains('active'), 'ancienne adresse rattachée à son groupe');
+  state.route = '#/bord'; render();
+  expect.ok(!$('#content-slot .subnav'), 'pas d’onglets pour un groupe d’une seule page');
+  state.route = '#/autotest';
+});
+autotest('Carte des navires', 'ports, MMSI et liens MarineTraffic, lignes tracées, ligne du jour reliée au planning', async ()=>{
+  const t = todayISO();
+  expect.ok(DEFAULT_MAP_PORTS.some(p=>p.name==='La Rochelle') && DEFAULT_MAP_PORTS.some(p=>p.name==='Morlaix'), 'ports de La Rochelle à Morlaix');
+  expect.ok(mapPorts().every(p=>p.lat>=MAP_DEFAULT_BOUNDS[0][0] && p.lat<=MAP_DEFAULT_BOUNDS[1][0] && p.lng>=MAP_DEFAULT_BOUNDS[0][1] && p.lng<=MAP_DEFAULT_BOUNDS[1][1]), 'tous dans la vue par défaut');
+  expect.ok(vesselInfo('quehan').mmsi==='227981280' && vesselInfo('men-du').mmsi==='228151010' && !vesselInfo('viga').mmsi, 'MMSI Quéhan et Men Du');
+  state._map = null; render(); state.route = '#/carte'; renderContent();
+  expect.ok($('#content-slot .map-schema'), 'schéma affiché sans réseau');
+  expect.ok($('#content-slot .map-schema').textContent.includes('Morlaix'), 'ports nommés');
+  expect.equal($('#content-slot [data-fk=marinetraffic-quehan]').href, 'https://www.marinetraffic.com/en/ais/details/ships/mmsi:227981280');
+  expect.ok($('#content-slot [data-fk=marinetraffic-men-du]').href.endsWith('mmsi:228151010') && !$('#content-slot [data-fk=marinetraffic-viga]'), 'liens par MMSI');
+  // port d'attache et ligne
+  $('#content-slot [data-fk=carte-navires]').click();
+  fillModal({'home-quehan':'lorient', 'mmsi-viga':'12'}); confirmTopModal();
+  expect.ok($('.modal [role=alert]').textContent.includes('9 chiffres'), 'MMSI vérifié');
+  fillModal({'mmsi-viga':''}); confirmTopModal(); await tick(20);
+  expect.equal(vesselInfo('quehan').homePort, 'lorient');
+  expect.ok($('#content-slot .map-port-home'), 'port d’attache mis en évidence');
+  $('#content-slot [data-fk=carte-nouvelle-ligne]').click();
+  fillModal({vessel:'quehan', from:'lorient', to:'port-tudy'}); confirmTopModal(); await tick(20);
+  const r = mapRoutes()[0];
+  expect.ok(r && r.vessel==='quehan' && routeLabel(r)==='Lorient → Groix – Port-Tudy', 'ligne créée : '+(r && routeLabel(r)));
+  expect.equal($$('#content-slot .map-schema polyline').length, 1, 'ligne dessinée');
+  // tracé : points de passage cliqués sur la carte
+  state._map.draw = {routeId:r.id, points:[]}; renderContent();
+  fleetMapClick(state._map, 47.70, -3.40); fleetMapClick(state._map, 47.66, -3.43);
+  expect.ok($('#content-slot [data-fk=carte-trace]').textContent.includes('2 point(s)'));
+  $('#content-slot [data-fk=trace-enregistrer]').click(); await tick(10);
+  expect.equal(mapRoutes()[0].via.length, 2, 'points de passage enregistrés');
+  expect.equal(routePoints(mapRoutes()[0]).length, 4, 'départ, 2 points, arrivée');
+  // ligne du jour : reliée au planning
+  const sel = $('#content-slot [data-fk=ligne-du-jour-quehan]');
+  sel.value = r.id; sel.dispatchEvent(new Event('change')); await tick(20);
+  const vp = vesselPlanAt('quehan', t);
+  expect.ok(vp && vp.routeId===r.id && vp.position==='Lorient → Groix – Port-Tudy', 'organisation du jour au planning');
+  expect.ok(plannedRoute('quehan', t).id===r.id);
+  expect.ok($$('#content-slot .map-schema polyline').some(p=>p.getAttribute('stroke-width')==='5'), 'ligne du jour en trait plein');
+  expect.ok($('#content-slot .map-vessel-svg').textContent.includes('Quéhan'), 'navire placé sur sa ligne');
+  // depuis le planning : la ligne est proposée et affichée
+  openVesselPlanModal('quehan', addDays(t, 1));
+  expect.ok($('.modal [name=routeId]'), 'ligne proposée dans l’organisation de la journée');
+  fillModal({routeId:r.id}); $('.modal [name=routeId]').dispatchEvent(new Event('change'));
+  expect.equal($('.modal [name=position]').value, 'Lorient → Groix – Port-Tudy', 'position préremplie');
+  confirmTopModal(); await tick(20);
+  expect.equal(vesselPlanAt('quehan', addDays(t, 1)).routeId, r.id);
+  setVesselPlan('quehan', addDays(t, 1), 'Lorient → Groix – Port-Tudy', 'fret');
+  expect.equal(vesselPlanAt('quehan', addDays(t, 1)).routeId, r.id, 'ligne gardée quand la position change sans elle');
+  // position reconnue dans le texte du planning
+  setVesselPlan('men-du', t, 'Port de Concarneau', '');
+  expect.equal((plannedPort('men-du', t)||{}).id, 'concarneau');
+  // port ajouté en cliquant la carte
+  state._map.placePort = true; renderContent();
+  fleetMapClick(state._map, 47.6, -3.0);
+  fillModal({name:'Mouillage test'}); confirmTopModal(); await tick(20);
+  expect.ok(mapPorts().some(p=>p.name==='Mouillage test' && p.lat===47.6), 'port ajouté');
+  // position en direct
+  closeAllModals(); renderContent();
+  $('#content-slot [data-fk=ais-quehan]').click();
+  expect.ok($('.modal').textContent.includes('227981280') && $('.modal a[href*="mmsi:227981280"]'), 'fenêtre position en direct avec lien de secours');
+  state.route = '#/autotest';
+});
 /* ===================== exécution et affichage ===================== */
+
 const autotestRun = {running:false, results:null, startedAt:0, duration:0};
 async function runAutotests(){
   if(autotestRun.running) return;
@@ -14820,7 +15287,7 @@ autotest('Paramètres', 'export Excel (.xlsx) relu par le lecteur de classeurs, 
 });
 autotest('Paramètres', 'version affichée avec sa date, recherche de mise à jour (version publiée plus récente)', async ()=>{
   expect.ok(appBuildInfo('20261024-1203-ff54f95a493b').label==='24/10/2026 à 12h03', 'date lue dans la version');
-  expect.equal(appBuildInfo('20261024-1345-b4ebbc64b4e3'), null, 'fichier non publié');
+  expect.equal(appBuildInfo('20261024-1400-e9b8479c3089'), null, 'fichier non publié');
   render(); state.route = '#/parametres'; renderContent();
   const card = $('#content-slot [data-fk=carte-version]');
   expect.ok(card && $('[data-fk=version-app]', card).textContent.length>0, 'carte Version et mises à jour');
