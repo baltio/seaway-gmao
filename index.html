@@ -2576,7 +2576,7 @@ function isOnline(){ return navigator.onLine !== false; }
 const RELAY_API = {fetch: (url, opts)=>fetch(url, opts)}; // remplaçable par les autotests
 /* version du relais attendue par cette application (RELAY_VERSION dans relais/Code.gs) ;
    un relais plus ancien fonctionne, mais sans les dernières fonctions (ex. revoir les liens) */
-const RELAY_EXPECTED = 9;
+const RELAY_EXPECTED = 10;
 
 function relayVersion(){ return isRelay() ? Number(state.driveFile.relay.version)||1 : null; }
 function relayOutdated(){ return isRelay() && relayVersion() < RELAY_EXPECTED; }
@@ -3173,11 +3173,13 @@ async function driveExternalizeAttachments(f){
   const pending = allAttachments().filter(a=>a.dataUrl && !a.path);
   if(!pending.length) return 0;
   if(f.relay){
+    const places = attachmentPlaces();
     for(const a of pending){
-      const blob = dataUrlToBlob(a.dataUrl);
-      const res = await relayCall('putAtt', {name:attachmentFileName(a), mime:a.contentType||blob.type||'application/octet-stream', data:await blobToBase64(blob)});
+      const blob = dataUrlToBlob(a.dataUrl), p = places.get(a) || {};
+      const res = await relayCall('putAtt', {name:p.name||attachmentFileName(a), folder:p.folder||'', mime:a.contentType||blob.type||'application/octet-stream', data:await blobToBase64(blob)});
       await blobCachePut('gdrive:'+res.id, blob);
       a.path = 'gdrive:'+res.id; a.size = blob.size; delete a.dataUrl;
+      if(p.folder) a.dossier = p.folder;
     }
     return pending.length;
   }
@@ -5274,6 +5276,48 @@ function attachmentsIn(snap){
   return ATTACHMENT_KEYS.flatMap(k=>(snap[k]||[]).flatMap(r=>attachmentListsOf(r).flat()));
 }
 function allAttachments(){ return attachmentsIn(state); }
+/* rangement sur le Drive (relais) : pieces-jointes/<navire ou Compagnie>/<type>, pieces-jointes/Marins/<marin>/<type> */
+const ATTACHMENT_FOLDERS = {tasks:'Jobs', jobs:'Jobs', nonconformities:'Défauts', drydocks:'Arrêts techniques', orders:'Commandes', fuel:'Carburant', documents:'Documents et certificats', vesselCerts:'Documents et certificats'};
+const driveSafeName = (s, max)=>String(s||'').replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+function attachmentFolder(key, rec){
+  if(key==='crewDocs'){ const m = crewMember(rec.crewId); return 'Marins/'+(driveSafeName(m ? crewFullName(m) : '', 60)||'Sans marin')+'/'+(rec.kind==='note' ? 'Feuilles de notes' : 'Certificats'); }
+  return (rec.vessel ? vesselName(rec.vessel) : 'Compagnie')+'/'+ATTACHMENT_FOLDERS[key];
+}
+function attachmentDriveName(a, rec){
+  const date = String(rec.date||rec.dateConstat||rec.debut||rec.dateDoc||rec.dateCommande||rec.dateEmission||rec.createdAt||'').slice(0, 10);
+  const title = driveSafeName(rec.titre||rec.task||rec.designation||rec.nom||rec.type, 60);
+  return driveSafeName([date, title].filter(Boolean).join(' ')+' - '+(a.name||attachmentFileName(a)), 180);
+}
+/* pour chaque pièce jointe : dossier et nom lisible sur le Drive, d'après sa fiche */
+function attachmentPlaces(){
+  const places = new Map();
+  ATTACHMENT_KEYS.forEach(k=>(state[k]||[]).forEach(r=>{
+    const folder = attachmentFolder(k, r);
+    attachmentListsOf(r).flat().forEach(a=>{ if(!places.has(a)) places.set(a, {folder, name:attachmentDriveName(a, r)}); });
+  }));
+  return places;
+}
+/* range les fichiers déjà envoyés (bouton administrateur) ; relançable : ce qui est en place est ignoré */
+function organizeDriveAttachments(){
+  if(!isRelay() || !canManageProfiles()) return;
+  if(relayVersion()<10){ toast('Relais à mettre à jour avant de ranger les fichiers.', 'error'); return; }
+  const seen = new Map(), todo = [];
+  attachmentPlaces().forEach((p, a)=>{
+    if(!String(a.path||'').startsWith('gdrive:') || a.dossier===p.folder) return;
+    if(seen.has(a.path)){ seen.get(a.path).twins.push(a); return; } // même fichier cité par deux fiches : rangé une fois
+    const item = {a, p, twins:[]}; seen.set(a.path, item); todo.push(item);
+  });
+  if(!todo.length){ toast('Les fichiers sont déjà rangés.'); return; }
+  confirmModal(todo.length+' fichier(s) à ranger par navire, type et marin sur le Drive. Les liens de l’application restent valables. Continuer ?', async ()=>{
+    let done = 0, failed = 0;
+    for(const {a, p, twins} of todo){
+      try{ await relayCall('moveAtt', {id:a.path.slice(7), folder:p.folder, name:p.name}); [a, ...twins].forEach(x=>{ x.dossier = p.folder; }); done++; }
+      catch(e){ failed++; }
+    }
+    if(done) scheduleSave();
+    toast(done+' fichier(s) rangé(s)'+(failed ? ', '+failed+' en échec : relancez le rangement' : ''), failed ? 'error' : 'success');
+  });
+}
 /* Écrit dans pieces-jointes/ les pièces encore intégrées, puis les remplace par
    une référence. Nom de fichier = identifiant unique : chaque fichier n'est écrit
    qu'une fois, deux personnes ne peuvent pas se l'écraser. */
@@ -12331,7 +12375,7 @@ function exportSpecPdf(spec){ printSheet(buildExportSheet(spec)); }
    APP_BUILD est inscrit à la publication (tools/preparer-deploiement.ps1) :
    « aaaammjj-hhmm-empreinte ». Fichier ouvert en local : version non numérotée.
    La recherche de mise à jour lit version.json sur le site publié. */
-const APP_BUILD = '20261108-1653-5ac8c9b54a68';
+const APP_BUILD = '20261108-1850-a73be0e2196b';
 function appBuildInfo(build){
   const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(?:-(\w+))?/.exec(build||'');
   return m ? {build, date:m[1]+'-'+m[2]+'-'+m[3], time:m[4]+':'+m[5], label:m[3]+'/'+m[2]+'/'+m[1]+' à '+m[4]+'h'+m[5]} : null;
@@ -12635,6 +12679,7 @@ function viewParametres(slot){
     el('div',{style:'display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;'},
       el('button',{class:'btn btn-primary btn-sm', type:'button', 'data-fk':'export-tout-xlsx', onclick:()=>exportAllXlsx()}, 'Tout exporter (Excel)'),
       el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'reimporter-sauvegarde', onclick:triggerImportInput}, 'Réimporter une sauvegarde et fusionner…'),
+      isRelay() && canManageProfiles() ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'ranger-fichiers', onclick:organizeDriveAttachments}, 'Ranger les fichiers sur le Drive…') : null,
       el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:exportFullBackup}, 'Sauvegarde complète (.json)'))
   );
   const exportList = el('div',{class:'export-list'});
@@ -15270,7 +15315,8 @@ function useFakeRelay(){
       case 'meta': return ok({rev:srv.rev, canEdit:!info.readOnly, user, relayVersion:srv.version});
       case 'get': return ok({rev:srv.rev, content:srv.content});
       case 'put': if(info.readOnly) return ok({error:'accès en lecture seule', code:403}); if(String(q.expectedRev)!==String(srv.rev)) return ok({conflict:true, rev:srv.rev}); srv.content = q.content; srv.rev++; return ok({ok:true, rev:srv.rev});
-      case 'putAtt': { const id = 'fakeAttachmentId'+Object.keys(srv.files).length; srv.files[id] = {mime:q.mime, data:q.data}; return ok({id}); }
+      case 'putAtt': { const id = 'fakeAttachmentId'+Object.keys(srv.files).length; srv.files[id] = {mime:q.mime, data:q.data, name:q.name, folder:q.folder}; return ok({id}); }
+      case 'moveAtt': if(!admin) return ok({error:'réservé à l’administrateur', code:403}); if(!srv.files[q.id]) return ok({error:'fichier hors du dossier', code:403}); Object.assign(srv.files[q.id], {folder:q.folder, name:q.name, moved:(srv.files[q.id].moved||0)+1}); return ok({ok:true});
       case 'getAtt': return srv.files[q.id] ? ok(srv.files[q.id]) : ok({error:'fichier hors du dossier', code:403});
       case 'archive': srv.archives[q.name] = srv.archives[q.name] || q.content; return ok({ok:true});
       case 'bind': if(info.profileId && !admin) return ok({error:'profil déjà relié', code:403}); info.profileId = q.profileId; return ok({ok:true});
@@ -15290,6 +15336,28 @@ function useFakeRelay(){
   });
   return srv;
 }
+autotest('Relais', 'pièces jointes rangées par navire, type et marin ; rangement des fichiers déjà envoyés, relançable', async ()=>{
+  const srv = useFakeRelay();
+  await relayJoin({url:srv.url, token:srv.admin});
+  const crew = addDoc('crew','crew',{nom:'Le Goff', prenom:'Jean'});
+  addDoc('jobs','jobs',{vessel:'viga', titre:'Vidange MP', createdAt:'x', attachments:[{id:'a1', name:'photo.jpg', contentType:'image/jpeg', dataUrl:textDataUrl('A')}]}); clearTimeout(saveTimer);
+  addDoc('crewDocs','crewDocs',{crewId:crew, kind:'note', nom:'Notes', date:'2026-05-02', attachments:[{id:'a2', name:'notes.pdf', contentType:'application/pdf', dataUrl:textDataUrl('B')}]}); clearTimeout(saveTimer);
+  addDoc('orders','orders',{vessel:'', designation:'Filtre', attachments:[{id:'a3', name:'bon.pdf', contentType:'application/pdf', dataUrl:textDataUrl('C')}]}); clearTimeout(saveTimer);
+  await driveSyncNow(false); await tick(20);
+  const files = Object.values(srv.files), folders = files.map(f=>f.folder).sort();
+  expect.equal(folders.join('|'), 'Compagnie/Commandes|Marins/Jean Le Goff/Feuilles de notes|Viga/Jobs'.split('|').sort().join('|'));
+  expect.ok(files.some(f=>f.name==='2026-05-02 Notes - notes.pdf'), 'nom lisible : '+files.map(f=>f.name).join(', '));
+  expect.ok(state.jobs[0].attachments[0].path.startsWith('gdrive:'), 'identifiant Drive gardé');
+  state.jobs[0].vessel = 'quehan';
+  organizeDriveAttachments(); await tick(10);
+  expect.ok($('.modal').textContent.includes('1 fichier'), 'seul le fichier déplacé reste à ranger');
+  confirmTopModal(); await tick(40);
+  const moved = srv.files[state.jobs[0].attachments[0].path.slice(7)];
+  expect.ok(moved.folder==='Quéhan/Jobs' && moved.moved===1, 'rangé');
+  expect.equal(state.jobs[0].attachments[0].dossier, 'Quéhan/Jobs');
+  organizeDriveAttachments(); await tick(10);
+  expect.equal($$('.modal').length, 0, 'rien à refaire');
+});
 autotest('Relais', 'lien d’invitation reconnu (adresse du relais et jeton), y compris collé dans un message', ()=>{
   const l = parseInviteLink('Bonjour, voici ton accès : https://baltio.github.io/seaway-gmao/#/rejoindre?r=https%3A%2F%2Fscript.google.com%2Fmacros%2Fs%2FABC%2Fexec&t=0123456789abcdef0123456789abcdef merci');
   expect.ok(l && l.url==='https://script.google.com/macros/s/ABC/exec' && l.token==='0123456789abcdef0123456789abcdef');
@@ -17054,7 +17122,7 @@ autotest('Éléments', 'lien à une catégorie depuis un job, une pièce, un dé
 });
 autotest('Paramètres', 'version affichée avec sa date, recherche de mise à jour (version publiée plus récente)', async ()=>{
   expect.ok(appBuildInfo('20261024-1203-ff54f95a493b').label==='24/10/2026 à 12h03', 'date lue dans la version');
-  expect.equal(appBuildInfo('20261108-1653-5ac8c9b54a68'), null, 'fichier non publié');
+  expect.equal(appBuildInfo('20261108-1850-a73be0e2196b'), null, 'fichier non publié');
   render(); state.route = '#/parametres'; renderContent();
   const card = $('#content-slot [data-fk=carte-version]');
   expect.ok(card && $('[data-fk=version-app]', card).textContent.length>0, 'carte Version et mises à jour');
