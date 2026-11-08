@@ -257,11 +257,15 @@ tr.ord-annule>td{color:var(--text-soft);}
 .ord-legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin:-4px 0 12px;font-size:12.5px;color:var(--text-soft);}
 .ord-legend-item{display:inline-flex;align-items:center;gap:6px;}
 .ord-legend-item i{width:12px;height:12px;border-radius:3px;background:var(--ord-c);display:inline-block;}
-.company-tabs{display:flex;align-items:flex-end;gap:0;flex-wrap:wrap;}
-.company-tabs>.tabs:first-child{flex:1 1 auto;min-width:0;}
-.company-tabs>.tabs+.tabs{flex:0 0 auto;padding-left:6px;}
+.company-tabs{display:flex;align-items:flex-end;flex-wrap:wrap;gap:0;border-bottom:1px solid var(--border);margin-bottom:16px;}
+.company-tabs>.tabs{flex:0 0 auto;border-bottom:0;margin-bottom:0;}
 .tab.tab-company.active{border-color:var(--navy-500);}
 .nc-jobs .settings-row{padding:6px 0;}
+.th-sort{all:unset;cursor:pointer;font:inherit;color:inherit;text-transform:inherit;letter-spacing:inherit;}
+.th-sort.active,.th-sort:hover{color:var(--text);}
+.th-sort:focus-visible{outline:2px solid var(--focus);outline-offset:2px;}
+.notif-unread .lbl{font-weight:700;}
+.notif-unread{box-shadow:inset 3px 0 0 var(--warning);padding-left:8px;}
 .invite-id{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;margin:0 0 10px;border:1px solid var(--border);border-left:4px solid var(--navy-500);border-radius:var(--radius);}
 .invite-ref{font-size:12.5px;color:var(--text-soft);white-space:nowrap;}
 .invite-ref strong{font-family:ui-monospace, monospace;color:var(--text);}
@@ -1446,7 +1450,7 @@ const state = {
   localCacheFailed: false,
   dirty: false,
   changeSeq: 0,
-  tasks: [], inventory: [], orders: [], fuel: [], vesselCerts: [], crew: [], users: [], settings: [], workHours: [], crewPlan: [], vesselPlan: [],
+  tasks: [], inventory: [], orders: [], fuel: [], vesselCerts: [], crew: [], users: [], settings: [], workHours: [], crewPlan: [], vesselPlan: [], crewDocs: [], notifications: [],
   jobs: [], equipment: [], history: [], meters: [], meterReadings: [], documents: [], sheets: [],
   nonconformities: [], crewAssignments: [], drydocks: [],
   sidebarOpen: false,
@@ -1466,6 +1470,8 @@ function canInput(){ return uiWritable(); }
 /* réglages partagés (types d'articles, adresse du service technique…) */
 function canConfigure(){ return uiWritable() && ['admin','technique'].includes(currentRole()); }
 function canManageProfiles(){ return uiWritable() && currentRole()==='admin'; }
+/* modifier un job déjà fait (depuis l'historique) : capitaine et administrateur seulement */
+function canEditDoneJob(){ return uiWritable() && ['admin','capitaine'].includes(currentRole()); }
 
 /* ---------- préférences d'interface (thème / densité) ---------- */
 function applyPrefs(){
@@ -1491,10 +1497,10 @@ applyVesselLock();
 const FS_ACCESS_SUPPORTED = 'showOpenFilePicker' in window;
 const DIR_ACCESS_SUPPORTED = 'showDirectoryPicker' in window;
 const DATA_FILE_NAME = 'seaway-gmao-data.json'; // nom du fichier de données en mode dossier
-const DATA_KEYS = ['tasks','jobs','equipment','inventory','orders','fuel','vesselCerts','crew','history','meters','meterReadings','documents','sheets','nonconformities','crewAssignments','drydocks','users','settings','workHours','crewPlan','vesselPlan'];
+const DATA_KEYS = ['tasks','jobs','equipment','inventory','orders','fuel','vesselCerts','crew','history','meters','meterReadings','documents','sheets','nonconformities','crewAssignments','drydocks','users','settings','workHours','crewPlan','vesselPlan','crewDocs','notifications'];
 const JSON_PICKER_TYPES = [{description:'Données Seaway GMAO', accept:{'application/json':['.json']}}];
 
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 12;
 
 function snapshotData(){
   const out = {app:'seaway-gmao', version:SCHEMA_VERSION, revision:state.fileRevision||0, savedAt:new Date().toISOString(), savedBy:state.me.name||''};
@@ -1578,6 +1584,25 @@ const MIGRATIONS = {
   8: obj=>{ if(!Array.isArray(obj.workHours)) obj.workHours = []; return obj; },
   // v10 : planning journalier des marins (crewPlan) et des navires (vesselPlan), même raison que v4
   9: obj=>{ ['crewPlan','vesselPlan'].forEach(k=>{ if(!Array.isArray(obj[k])) obj[k] = []; }); return obj; },
+  // v12 : arborescence par défaut des éléments, sur chaque navire (identifiants fixes : deux appareils qui migrent ne créent pas de doublons)
+  11: obj=>{
+    if(!Array.isArray(obj.equipment)) obj.equipment = [];
+    const now = new Date().toISOString();
+    ALL_VESSELS.forEach(v=>DEFAULT_EQUIPMENT.forEach(([cat, names], i)=>names.forEach((name, j)=>{
+      const meter = DEFAULT_EQUIPMENT_METERS[name]||'';
+      const same = obj.equipment.find(e=>e.vessel===v.key && normText(e.name)===normText(name));
+      if(same){ if(meter && !same.meter) same.meter = meter; return; }
+      obj.equipment.push({id:'eq-def-'+v.key+'-'+i+'-'+j, vessel:v.key, name, categorie:cat, meter, notes:'', createdAt:now, updatedAt:now, updatedBy:null});
+    })));
+    return obj;
+  },
+  // v11 : documents des marins (certificats, feuilles de notes) et notifications ; numéro de passeport retiré des fiches et de l'historique
+  10: obj=>{
+    ['crewDocs','notifications'].forEach(k=>{ if(!Array.isArray(obj[k])) obj[k] = []; });
+    (obj.crew||[]).forEach(m=>{ delete m.passeport; });
+    (obj.history||[]).forEach(h=>{ if(h.entityType==='crew' && h.detail) h.detail = String(h.detail).split(' · ').filter(x=>!x.startsWith('Passeport')).join(' · '); });
+    return obj;
+  },
 };
 function migrateSnapshot(obj){
   let v = Number(obj.version) || 1;
@@ -2210,6 +2235,7 @@ const RECORD_LABELERS = {
   documents: r=>'Document « '+r.titre+' »', sheets: r=>'Tableur « '+r.titre+' »', meters: r=>'Compteur '+meterLabel(r.meter)+' '+vesselName(r.vessel),
   nonconformities: r=>'Fiche ISM '+ncLabel(r), crewAssignments: r=>'Embarquement de '+crewFullName(crewMember(r.crewId))+' ('+fmtDate(r.debut)+')',
   drydocks: r=>'Arrêt technique « '+r.titre+' »',
+  crewDocs: r=>(r.kind==='note' ? 'Feuille de notes' : 'Certificat')+' de '+crewFullName(crewMember(r.crewId)), notifications: r=>'Notification « '+r.title+' »',
 };
 function recordLabel(key, r){
   if(!r) return key;
@@ -2220,7 +2246,7 @@ const FIELD_LABELS = {task:'Intitulé', titre:'Titre', observations:'Observation
   seuilAlerte:'Seuil d’alerte', emplacement:'Emplacement', notes:'Notes', dateExpiration:'Date d’expiration', dateEmission:'Date d’émission',
   assigneA:'Assigné à', equipmentId:'Élément lié', hoursAtLast:'Heures au dernier entretien', cycleDays:'Cycle (jours)', cycleHours:'Cycle (heures)',
   commentaire:'Compte rendu', nom:'Nom', prenom:'Prénom', poste:'Poste', dateEmbarquement:'Embarquement', dateDebarquement:'Débarquement',
-  passeport:'Passeport', categorie:'Catégorie', enPlace:'En place', refFournisseur:'Réf. fournisseur', marque:'Marque', fournisseur:'Fournisseur', suiviPar:'Suivie par', absence:'Absence', causes:'Causes', actionImmediate:'Action immédiate', actionCorrective:'Action corrective',
+  equipCat:'Catégorie liée', adresse:'Adresse postale', habilGrue:'Habilitation grue', qualifBateaux:'Qualifié navires', qualifGrue:'Qualifié grue', frais:'Frais', fraisNote:'Commentaire des frais', dateRevision:'Révision à faire', categorie:'Catégorie', enPlace:'En place', refFournisseur:'Réf. fournisseur', marque:'Marque', fournisseur:'Fournisseur', suiviPar:'Suivie par', absence:'Absence', causes:'Causes', actionImmediate:'Action immédiate', actionCorrective:'Action corrective',
   responsable:'Suivi par', realisePar:'Réalisée par', besoin:'Besoin', commentaires:'Commentaires', travauxRealises:'Tâches réalisées', faitLe:'Fait le', echeance:'Échéance', gravite:'Gravité', efficace:'Efficacité', verifPar:'Vérifié par', verifDate:'Date de vérification', verifCommentaire:'Commentaire de vérification', jobId:'Job lié', ncId:'Fiche ISM liée', numero:'Numéro', dateConstat:'Date du constat', constatePar:'Constaté par', origine:'Origine', type:'Type',
   crewId:'Marin', code:'Code', note:'Précision', position:'Position prévue', operations:'Opérations', periods:'Périodes de travail', ticket:'Ticket restaurant', debut:'Début', fin:'Fin', lieu:'Chantier / lieu', budget:'Budget', travaux:'Travaux', libelle:'Travail', prestataire:'Prestataire', cout:'Coût', vessel:'Navire', designation:'Désignation', category:'Catégorie', url:'Lien', dateEcheance:'Échéance', dateRealisation:'Réalisé le'};
 function fieldLabel(path){
@@ -3517,7 +3543,7 @@ function deleteAttachments(list){ /* pièces jointes intégrées au fichier : ri
 const METERS = [
   {key:'mp1', label:'MP bâbord', long:'Moteur principal bâbord'},
   {key:'mp2', label:'MP tribord', long:'Moteur principal tribord'},
-  {key:'dg',  label:'DG',  long:'Diesel générateur'},
+  {key:'dg',  label:'GE',  long:'Groupe électrogène'},
 ];
 const meterDef = k => METERS.find(m=>m.key===k) || METERS[0];
 const meterLabel = k => meterDef(k).label;
@@ -3835,7 +3861,10 @@ const NAV = [
   {route:'#/carte', label:'Carte des navires', icon:()=>iconMap()},
   {route:'#/calendrier', label:'Calendrier', icon:iconCalendar},
   {route:'#/rappels', label:'Rappels & agenda', icon:()=>iconBell()},
+  {route:'#/notifications', label:'Notifications', icon:()=>iconBell()},
+  {route:'#/certificats-equipage', label:'Certificats marins', icon:iconAnchor},
   {route:'#/entretien', label:'Entretien', icon:iconWrench},
+  {route:'#/maintenance-historique', label:'Historique des jobs', icon:iconClock},
   {route:'#/defauts', label:'Défaut/NC', icon:()=>iconAlert()},
   {route:'#/arrets', label:'Arrêts techniques', icon:()=>iconDock()},
   {route:'#/equipements', label:'Éléments du navire', icon:iconLayers},
@@ -3861,17 +3890,17 @@ const NAV = [
 const NAV_GROUPS = [
   {id:'bord', label:'Saisie à bord', icon:()=>iconClipboard(), routes:['#/bord']},
   {id:'accueil', label:'Tableau de bord', icon:iconGrid, routes:['#/dashboard','#/comparatif']},
-  {id:'agenda', label:'Agenda', icon:iconCalendar, routes:['#/calendrier','#/rappels']},
+  {id:'agenda', label:'Agenda', icon:iconCalendar, routes:['#/calendrier','#/rappels','#/notifications']},
   {id:'carte', label:'Carte des navires', icon:()=>iconMap(), routes:['#/carte']},
-  {id:'maintenance', label:'Maintenance', icon:iconWrench, routes:['#/entretien','#/defauts','#/arrets','#/equipements','#/certificats-navire']},
+  {id:'maintenance', label:'Maintenance', icon:iconWrench, routes:['#/entretien','#/maintenance-historique','#/defauts','#/arrets','#/equipements','#/certificats-navire']},
   {id:'stocks', label:'Stocks & commandes', icon:iconBox, routes:['#/inventaire','#/commandes']},
   {id:'carburant', label:'Carburant & huiles', icon:iconDroplet, routes:['#/carburant','#/consommations']},
-  {id:'equipage', label:'Équipage', icon:iconUser, routes:['#/equipage','#/planning','#/heures']},
+  {id:'equipage', label:'Équipage', icon:iconUser, routes:['#/equipage','#/certificats-equipage','#/planning','#/heures']},
   {id:'documents', label:'Documents & rapports', icon:iconBook, routes:['#/documentation','#/tableurs','#/rapports']},
   {id:'historique', label:'Historique', icon:iconClock, routes:['#/historique']},
   {id:'parametres', label:'Paramètres', icon:iconSettings, routes:['#/parametres','#/profils']},
 ];
-const NAV_SUB_LABELS = {'#/carburant':'Relevés et soutages', '#/dashboard':'Vue d’ensemble', '#/parametres':'Réglages', '#/rappels':'Rappels', '#/equipage':'Marins'};
+const NAV_SUB_LABELS = {'#/maintenance-historique':'Historique', '#/certificats-equipage':'Certificats', '#/carburant':'Relevés et soutages', '#/dashboard':'Vue d’ensemble', '#/parametres':'Réglages', '#/rappels':'Rappels', '#/equipage':'Marins'};
 function routeKey(route){ const r = String(route||''); if(r.startsWith('#/certificats-marins')) return '#/equipage'; const n = NAV.find(x=>r.startsWith(x.route)); return n ? n.route : '#/dashboard'; }
 function navGroupOf(route){ const k = routeKey(route); return NAV_GROUPS.find(g=>g.routes.includes(k)) || NAV_GROUPS[1]; }
 function visibleGroupRoutes(g){ const vis = new Set(visibleNav().map(n=>n.route)); return g.routes.filter(r=>vis.has(r)); }
@@ -3885,7 +3914,7 @@ function subNav(route){
   return el('nav',{class:'subnav', 'aria-label':g.label},
     ...vis.map(r=>{ const n = NAV.find(x=>x.route===r); const on = r===cur;
       return el('a',{class:'subnav-item'+(on ? ' active' : ''), href:r, 'aria-current':on ? 'page' : null, 'data-fk':'subnav-'+r},
-        el('span',{html:n.icon()}), NAV_SUB_LABELS[r] || n.label); }));
+        el('span',{html:n.icon()}), (NAV_SUB_LABELS[r] || n.label)+(r==='#/notifications' && unreadNotifications().length ? ' ('+unreadNotifications().length+')' : '')); }));
 }
 
 /* modules masqués dans le menu (Paramètres › Affichage, réglage de l'appareil) ;
@@ -4093,6 +4122,9 @@ function drawContent(){
 function drawPage(slot){
   const r = state.route;
   if(r.startsWith('#/carte')) return viewCarte(slot);
+  if(r.startsWith('#/maintenance-historique')) return viewJobHistory(slot);
+  if(r.startsWith('#/notifications')) return viewNotifications(slot);
+  if(r.startsWith('#/certificats-equipage')) return viewCrewDocs(slot);
   if(r.startsWith('#/comparatif')) return viewComparatif(slot);
   if(r.startsWith('#/calendrier')) return viewCalendrier(slot);
   if(r.startsWith('#/rappels')) return viewRappels(slot);
@@ -4354,7 +4386,7 @@ function filteredCalendarEvents(from, to){
   if(state._calStatus) ev = ev.filter(e=>e.kind==='due' && e.status===state._calStatus);
   if(state._calSearch){
     const q = state._calSearch;
-    ev = ev.filter(e=>(e.label+' '+(e.sub||'')+' '+(equipmentName(e.equipmentId)||'')+' '+(e.vessel?vesselName(e.vessel):'')).toLowerCase().includes(q));
+    ev = ev.filter(e=>(e.label+' '+(e.sub||'')+' '+(equipLabel(e)||'')+' '+(e.vessel?vesselName(e.vessel):'')).toLowerCase().includes(q));
   }
   return ev;
 }
@@ -4504,7 +4536,7 @@ function viewCalendarMonth(slot, events, numDays, iso){
   }else{
     const list = el('div',{class:'upcoming-list'});
     selEvents.forEach(e=>{
-      const eqn = equipmentName(e.equipmentId);
+      const eqn = equipLabel(e);
       list.appendChild(el('div',{class:'upcoming-row row-click', role:'button', tabindex:'0', style:'cursor:pointer;', onclick:()=>openCalendarItem(e.ref)},
         el('span',{class:'cal-mark cal-mark-lg st-'+e.status, html:calMarkIcon(e, 15)}),
         el('div',{class:'who'},
@@ -4569,7 +4601,7 @@ function viewCalendarTable(slot, events, numDays, iso){
         el('button',{type:'button', class:'cal-t-open', 'data-fk':'calrow-'+r.first.key, 'aria-label':e0.label+' — '+summary, onclick:()=>openCalendarItem(e0.ref)},
           el('span',{class:'cal-t-icon', html:calTypeDef(e0.type).icon(14)}),
           el('span',{class:'cal-t-text'}, el('span',{class:'cal-t-label'}, e0.label),
-            el('span',{class:'cal-t-sub'}, [e0.vessel?vesselName(e0.vessel):'', equipmentName(e0.equipmentId)||calTypeDef(e0.type).label].filter(Boolean).join(' · '))))),
+            el('span',{class:'cal-t-sub'}, [e0.vessel?vesselName(e0.vessel):'', equipLabel(e0)||calTypeDef(e0.type).label].filter(Boolean).join(' · '))))),
       ...dayInfo.map(di=>{
         const list = byDay[di.date] || [];
         return el('td',{class:'cal-t-cell'+dayClass(di)},
@@ -4590,10 +4622,35 @@ function calendarLegend(){
 /* ===================== ENTRETIEN ===================== */
 const ENTRETIEN_CATS = ['Entretien périodique général','Grue','Essais sécurité obligatoires','Exercices & instructions'];
 const JOB_STATUSES = ['À faire','En cours','Terminé'];
+const jobStatusLabel = s=>s==='Terminé' ? 'Fait' : (s||'À faire'); // « Terminé » reste la valeur enregistrée
 const JOB_PRIORITIES = ['Normale','Urgente'];
 
 function equipmentOptionsFor(vessel){
   return [{v:'',l:'—'}, ...state.equipment.filter(e=>e.vessel===vessel).map(e=>({v:e.id,l:e.name}))];
+}
+/* lien d'une fiche (pièce, job, défaut, commande) : un élément (equipmentId) ou une catégorie entière (equipCat).
+   Dans les listes déroulantes, la catégorie a pour valeur « cat:<nom> ». */
+function equipmentLinkOptions(vessel){
+  const list = state.equipment.filter(e=>e.vessel===vessel).sort((a,b)=>a.name.localeCompare(b.name,'fr'));
+  return [{v:'',l:'—'}, ...equipmentCats().flatMap(c=>[{v:'cat:'+c, l:c+' (toute la catégorie)'}, ...list.filter(e=>e.categorie===c).map(e=>({v:e.id, l:'\u00a0\u00a0\u00a0'+e.name}))]),
+    ...list.filter(e=>!e.categorie).map(e=>({v:e.id, l:e.name}))];
+}
+const linkValue = r=>!r ? '' : r.equipCat ? 'cat:'+r.equipCat : (r.equipmentId||'');
+function applyEquipLink(d){
+  const v = String(d.equipmentId||'');
+  if(v.startsWith('cat:')){ d.equipCat = v.slice(4); d.equipmentId = null; }
+  else{ d.equipCat = null; d.equipmentId = v||null; }
+  return d;
+}
+const equipLabel = r=>r.equipCat ? r.equipCat+' (catégorie)' : equipmentName(r.equipmentId);
+function bindEquipLink(body){
+  const v = $('[name=vessel]', body), s = $('[name=equipmentId]', body);
+  if(!v || !s) return;
+  v.addEventListener('change', ()=>{
+    const cur = s.value; s.innerHTML = '';
+    equipmentLinkOptions(v.value.startsWith('site:') ? '' : v.value).forEach(o=>s.appendChild(el('option',{value:o.v}, o.l)));
+    s.value = [...s.options].some(o=>o.value===cur) ? cur : '';
+  });
 }
 function equipmentName(id){
   if(!id) return null;
@@ -4624,14 +4681,15 @@ function equipmentFilter(vessel, stateKey){
   const sel = el('select',{class:'select', 'aria-label':'Filtrer par élément du navire', 'data-fk':'filtre-element', onchange:(e)=>{ state[stateKey]=e.target.value; renderContent(); }},
     el('option',{value:''},'Tous éléments'),
     el('option',{value:'__aucun'},'Sans élément lié'),
-    ...state.equipment.filter(e=>e.vessel===vessel).map(e=>el('option',{value:e.id}, e.name)));
+    ...equipmentLinkOptions(vessel).slice(1).map(o=>el('option',{value:o.v}, o.l)));
   sel.value = state[stateKey] || '';
   if(sel.value!==(state[stateKey]||'')) state[stateKey] = ''; // élément d'un autre navire
   return sel;
 }
 function matchesEquipment(rec, filter){
   if(!filter) return true;
-  if(filter==='__aucun') return !rec.equipmentId;
+  if(filter==='__aucun') return !rec.equipmentId && !rec.equipCat;
+  if(filter.startsWith('cat:')) return rec.equipCat===filter.slice(4) || (state.equipment.find(e=>e.id===rec.equipmentId)||{}).categorie===filter.slice(4);
   return rec.equipmentId===filter;
 }
 
@@ -4684,7 +4742,7 @@ function viewTachesPeriodiques(slot){
     const tbody = el('tbody',{});
     items.forEach(t=>{
       const s = taskStatus(t);
-      const eqn = equipmentName(t.equipmentId);
+      const eqn = equipLabel(t);
       const nDone = (t.completions||[]).length;
       const nFiles = (t.attachments||[]).length + (t.completions||[]).reduce((n,c)=>n+(c.attachments||[]).length, 0);
       const meta = [nDone ? '✓ '+nDone+' réalisation'+(nDone>1?'s':'') : '', nFiles ? nFiles+' pièce'+(nFiles>1?'s':'')+' jointe'+(nFiles>1?'s':'') : ''].filter(Boolean).join(' · ');
@@ -4785,7 +4843,7 @@ function openTaskModal(t){
     field('Navire','vessel','select', VESSELS.map(v=>({v:v.key,l:v.name})), vessel),
     field('Catégorie','category','select', ENTRETIEN_CATS.map(c=>({v:c,l:c})), t?.category || ENTRETIEN_CATS[0]),
     field('Intitulé du job','task','text', null, t?.task||''),
-    field('Élément du navire concerné','equipmentId','select', equipmentOptionsFor(vessel), t?.equipmentId||'', 'recensé dans « Éléments du navire »'),
+    field('Catégorie ou élément concerné','equipmentId','select', equipmentLinkOptions(vessel), linkValue(t), 'recensé dans « Éléments du navire »'),
     fieldRow(
       field('Suivi de l’échéance','unit','select', [{v:'date',l:'Par date'},{v:'heures',l:'Par compteur horaire'}], t?.unit||'date'),
       field('Compteur','meter','select', METERS.map(m=>({v:m.key, l:m.label+' — '+m.long})), t?.meter||'mp1', 'si suivi par compteur horaire')
@@ -4808,6 +4866,7 @@ function openTaskModal(t){
     attachEl,
     dupRow,
     isEdit ? equipmentDocsSection(t.equipmentId) : null,
+    isEdit && canEdit() ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'dupliquer-tache', onclick:()=>openCopyToVesselModal('tasks', t.vessel, [t.id])}, 'Dupliquer vers d’autres navires…') : null,
     isEdit ? recordHistorySection(t) : null
   );
   openModal({
@@ -4829,7 +4888,7 @@ function openTaskModal(t){
       data.cycleDays = data.cycleDays ? Number(data.cycleDays) : null;
       data.hoursAtLast = data.hoursAtLast!=='' ? Number(data.hoursAtLast) : null;
       data.cycleHours = data.cycleHours!=='' ? Number(data.cycleHours) : null;
-      data.equipmentId = data.equipmentId || null;
+      applyEquipLink(data);
       data.attachments = attachEl._getList();
       data.pieces = partsEl._getList();
       if(isEdit){
@@ -4965,7 +5024,7 @@ function viewJobsPonctuels(slot){
     el('input',{type:'search', 'aria-label':'Rechercher un job ponctuel…', 'data-fk':'recherche', placeholder:'Rechercher un job ponctuel…', value:state._jobSearch||'', oninput:(e)=>{state._jobSearch=e.target.value.toLowerCase(); renderContent();}}));
   const statutSel = el('select',{class:'select', 'aria-label':'Filtrer par statut', 'data-fk':'filtre-statut', onchange:(e)=>{state._jobStatut=e.target.value; renderContent();}},
     el('option',{value:''},'Tous statuts'),
-    ...JOB_STATUSES.map(s=>el('option',{value:s}, s))
+    ...JOB_STATUSES.map(s=>el('option',{value:s}, jobStatusLabel(s)))
   );
   statutSel.value = state._jobStatut || '';
   const natureSel = el('select',{class:'select', 'aria-label':'Filtrer par nature', 'data-fk':'filtre-nature', onchange:(e)=>{state._jobNature=e.target.value; renderContent();}},
@@ -5003,7 +5062,7 @@ function viewJobsPonctuels(slot){
   const table = el('table',{}, el('thead',{}, el('tr',{}, el('th',{},'Job'), el('th',{},'Nature'), el('th',{},'Élément'), el('th',{},'Assigné à'), el('th',{},'Échéance'), el('th',{},'Statut'), el('th',{}))));
   const tbody = el('tbody',{});
   filtered.forEach(j=>{
-    const eqn = equipmentName(j.equipmentId);
+    const eqn = equipLabel(j);
     tbody.appendChild(el('tr',{class:'row-click', tabindex:'0', 'data-fk':'ligne-'+j.id, onclick:(e)=>{ if(e.target.closest('.row-actions')) return; openJobModal(j); }},
       el('td',{},
         el('div',{style:'font-weight:600;'}, j.priorite==='Urgente'?el('span',{class:'priority-dot', title:'Urgent'}):null, j.titre),
@@ -5016,7 +5075,7 @@ function viewJobsPonctuels(slot){
       el('td',{}, j.dateEcheance?fmtDate(j.dateEcheance):'—'),
       el('td',{html:jobStatusBadge(j.statut)}),
       el('td',{class:'row-actions', style:'text-align:right;'},
-        (j.statut!=='Terminé' && canInput()) ? el('button',{class:'btn btn-ghost btn-sm', 'aria-label':'Terminer « '+j.titre+' »', onclick:(e)=>{e.stopPropagation(); quickCompleteJob(j);}}, el('span',{html:iconCheck()}),'Terminer') : null
+        (j.statut!=='Terminé' && canInput()) ? el('button',{class:'btn btn-ghost btn-sm', 'aria-label':'Terminer « '+j.titre+' »', onclick:(e)=>{e.stopPropagation(); quickCompleteJob(j);}}, el('span',{html:iconCheck()}),'Fait') : null
       )
     ));
   });
@@ -5026,7 +5085,7 @@ function viewJobsPonctuels(slot){
 }
 function jobStatusBadge(s){
   const map = {'À faire':'inconnu','En cours':'proche','Terminé':'ok'};
-  return `<span class="badge ${map[s]||'inconnu'}">${esc(s||'À faire')}</span>`;
+  return `<span class="badge ${map[s]||'inconnu'}">${esc(jobStatusLabel(s))}</span>`;
 }
 async function quickCompleteJob(j){
   const err = !j.piecesSorties && (j.pieces||[]).length ? partsStockError(j.pieces) : null;
@@ -5053,11 +5112,11 @@ function openJobModal(j, prefill){
     field('Titre du job','titre','text', null, base.titre||''),
     fieldRow(
       field('Nature','nature','select', JOB_NATURES.map(s=>({v:s,l:s})), base.nature||'Réparation de défaut'),
-      field('Élément du navire concerné','equipmentId','select', equipmentOptionsFor(vessel), base.equipmentId||'')
+      field('Catégorie ou élément concerné','equipmentId','select', equipmentLinkOptions(vessel), linkValue(base))
     ),
     field('Assigné à (optionnel)','assigneA','text', null, base.assigneA||'', 'nom de la personne responsable'),
     fieldRow(
-      field('Statut','statut','select', JOB_STATUSES.map(s=>({v:s,l:s})), base.statut||'À faire'),
+      field('Statut','statut','select', JOB_STATUSES.map(s=>({v:s,l:jobStatusLabel(s)})), base.statut||'À faire'),
       field('Priorité','priorite','select', JOB_PRIORITIES.map(s=>({v:s,l:s})), base.priorite||'Normale')
     ),
     fieldRow(
@@ -5067,6 +5126,7 @@ function openJobModal(j, prefill){
     field('Description (défaut constaté, travaux…)','description','textarea', null, base.description||''),
     partsEl,
     attachEl,
+    isEdit && canEdit() ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'dupliquer-job', onclick:()=>openCopyToVesselModal('jobs', j.vessel, [j.id])}, 'Dupliquer vers d’autres navires…') : null,
     isEdit ? equipmentDocsSection(j.equipmentId) : null,
     jobNc(base) ? el('div',{class:'banner'}, 'Action corrective de la fiche '+(jobNc(base).numero||'Défaut/NC')+' : '+(jobNc(base).titre||'')+'.',
       isEdit ? el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>openNcModal(jobNc(base))}, 'Ouvrir la fiche') : null) : null,
@@ -5075,7 +5135,7 @@ function openJobModal(j, prefill){
   openModal({
     title: isEdit ? 'Job ponctuel — '+j.titre : 'Nouveau job ponctuel',
     body,
-    readOnly: !canEdit(),
+    readOnly: !canEdit() || (isEdit && j.statut==='Terminé' && !canEditDoneJob()),
     validate: (data)=>requireField(data,'titre','Le titre du job') || (data.statut==='Terminé' && !consumed ? partsStockError(partsEl._getList()) : null),
     onDelete: isEdit ? async ()=>{
       await deleteDoc('jobs','jobs', j.id);
@@ -5083,7 +5143,7 @@ function openJobModal(j, prefill){
       toast('Job supprimé');
     } : null,
     onSubmit: async (data)=>{
-      data.equipmentId = data.equipmentId || null;
+      applyEquipLink(data);
       data.attachments = attachEl._getList();
       if(data.statut==='Terminé' && !data.dateRealisation) data.dateRealisation = todayISO();
       if(!consumed) data.pieces = partsEl._getList();
@@ -5205,9 +5265,11 @@ function attachmentListsOf(rec){
   const lists = [];
   if(Array.isArray(rec.attachments)) lists.push(rec.attachments);
   (rec.completions||[]).forEach(c=>{ if(Array.isArray(c.attachments)) lists.push(c.attachments); });
+  (rec.travaux||[]).forEach(w=>{ if(Array.isArray(w.attachments)) lists.push(w.attachments); if(Array.isArray(w.photosCloture)) lists.push(w.photosCloture); }); // arrêts techniques
+  (rec.factures||[]).forEach(f=>{ if(Array.isArray(f.attachments)) lists.push(f.attachments); });
   return lists;
 }
-const ATTACHMENT_KEYS = ['tasks','jobs','documents','vesselCerts','nonconformities','drydocks','orders'];
+const ATTACHMENT_KEYS = ['tasks','jobs','documents','vesselCerts','nonconformities','drydocks','orders','fuel','crewDocs'];
 function attachmentsIn(snap){
   return ATTACHMENT_KEYS.flatMap(k=>(snap[k]||[]).flatMap(r=>attachmentListsOf(r).flat()));
 }
@@ -5378,8 +5440,21 @@ function attachmentsEditor(existing, opts){
     const camInput = el('input',{type:'file', accept:'image/*', capture:'environment', style:'display:none;', 'aria-hidden':'true', tabindex:'-1', onchange:(e)=>{ uploadFile(e.target.files[0]); e.target.value=''; }});
     wrap.appendChild(el('div',{style:'display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;'},
       el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>fileInput.click()}, el('span',{html:iconPaperclip()}),'Importer un fichier'),
-      el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>camInput.click()}, el('span',{html:iconCamera()}),'Prendre une photo')
+      el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>camInput.click()}, el('span',{html:iconCamera()}),'Prendre une photo'),
+      el('span',{class:'hint', style:'margin:0;align-self:center;'}, 'ou collez une capture d’écran (Ctrl+V)')
     ));
+    // capture d'écran collée : va dans le premier éditeur de la fenêtre ouverte au-dessus
+    wrap.dataset.paste = '1';
+    const onPaste = e=>{
+      if(!wrap.isConnected){ document.removeEventListener('paste', onPaste); return; }
+      const top = $$('.modal').pop();
+      if(!top || !top.contains(wrap) || $('[data-paste]', top)!==wrap) return;
+      const files = [...(e.clipboardData ? e.clipboardData.files : [])].filter(f=>f.type.startsWith('image/'));
+      if(!files.length) return;
+      e.preventDefault();
+      files.forEach(f=>uploadFile(new File([f], f.name && f.name!=='image.png' ? f.name : 'capture-'+todayISO()+'.png', {type:f.type})));
+    };
+    setTimeout(()=>document.addEventListener('paste', onPaste), 0);
     wrap.appendChild(fileInput);
     wrap.appendChild(camInput);
     wrap.appendChild(el('div',{class:'hint', style:'margin-top:4px;'}, state.driveFile
@@ -5400,6 +5475,7 @@ function viewEquipements(slot){
   const rows = state.equipment.filter(e=>e.vessel===state.activeVessel);
   const search = el('div',{class:'search-box'}, el('span',{html:iconSearch()}), el('input',{type:'search', 'aria-label':'Rechercher un élément…', 'data-fk':'recherche', placeholder:'Rechercher un élément…', value:state._eqSearch||'', oninput:e=>{state._eqSearch=e.target.value.toLowerCase(); renderContent();}}));
   slot.appendChild(el('div',{class:'toolbar'}, search,
+    canConfigure() ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'elements-categories', onclick:openEquipCatsModal}, 'Catégories…') : null,
     canEdit() ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'elements-copier', onclick:()=>openCopyToVesselModal('equipment')}, 'Copier vers…') : null,
     addButtonIfAllowed('Ajouter un élément', ()=>openEquipmentModal())
   ));
@@ -5411,25 +5487,68 @@ function viewEquipements(slot){
     slot.appendChild(fabIfAllowed(()=>openEquipmentModal()));
     return;
   }
-  const card = el('div',{class:'card', style:'padding:16px 18px;'});
-  const wrap = el('div',{class:'table-wrap'});
-  const table = el('table',{}, el('thead',{}, el('tr',{}, el('th',{},'Élément'), el('th',{},'Catégorie'), el('th',{},'Jobs liés'), el('th',{},'Inventaire lié'))));
-  const tbody = el('tbody',{});
-  filtered.forEach(eq=>{
-    const nbTasks = state.tasks.filter(t=>t.equipmentId===eq.id).length + state.jobs.filter(j=>j.equipmentId===eq.id).length;
-    const nbInv = state.inventory.filter(i=>i.equipmentId===eq.id).length;
-    tbody.appendChild(el('tr',{class:'row-click', tabindex:'0', 'data-fk':'ligne-'+eq.id, onclick:()=>openEquipmentModal(eq)},
-      el('td',{}, el('div',{style:'font-weight:600'}, eq.name), eq.notes?el('div',{style:'font-size:12px;color:var(--text-soft);margin-top:2px;'}, eq.notes):null),
-      el('td',{html:`<span class="cat-tag">${esc(eq.categorie||'—')}</span>`}),
-      el('td',{}, String(nbTasks)),
-      el('td',{}, String(nbInv))
-    ));
+  const cats = equipmentCats();
+  const groups = [...cats.map(c=>[c, filtered.filter(e=>e.categorie===c)]), ['', filtered.filter(e=>!e.categorie)]].filter(([c, l])=>l.length || (c && !state._eqSearch));
+  groups.forEach(([c, list])=>{
+    const direct = c ? EQUIP_LINK_KEYS.reduce((n,k)=>n+state[k].filter(r=>r.equipCat===c && r.vessel===state.activeVessel).length, 0) : 0;
+    const card = el('div',{class:'card', style:'padding:16px 18px;margin-bottom:12px;', 'data-fk':'categorie-'+normText(c||'sans').replace(/\W+/g,'-')},
+      el('div',{class:'section-head', style:'margin-bottom:6px;'}, el('h2',{style:'font-size:15.5px;margin:0;'}, c||'Sans catégorie', el('span',{class:'hint', style:'margin-left:8px;font-weight:400;'}, list.length+' élément(s)'+(direct ? ' · '+direct+' fiche(s) liée(s) à la catégorie' : ''))),
+        el('div',{style:'display:flex;gap:6px;'}, c ? equipHistoryLink(c, '', state.activeVessel) : null, c && canEdit() ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'ajouter-dans-'+normText(c).replace(/\W+/g,'-'), onclick:()=>openEquipmentModal(null, {categorie:c})}, 'Ajouter') : null)));
+    if(list.length){
+      const tbody = el('tbody',{});
+      list.slice().sort((a,b)=>a.name.localeCompare(b.name,'fr')).forEach(eq=>{
+        const nbTasks = state.tasks.filter(t=>t.equipmentId===eq.id).length + state.jobs.filter(j=>j.equipmentId===eq.id).length;
+        const nbInv = state.inventory.filter(i=>i.equipmentId===eq.id).length;
+        tbody.appendChild(el('tr',{class:'row-click', tabindex:'0', 'data-fk':'ligne-'+eq.id, onclick:()=>openEquipmentModal(eq)},
+          el('td',{}, el('div',{style:'font-weight:600'}, eq.name), eq.notes?el('div',{style:'font-size:12px;color:var(--text-soft);margin-top:2px;'}, eq.notes):null),
+          el('td',{}, String(nbTasks)), el('td',{}, String(nbInv))));
+      });
+      card.appendChild(el('div',{class:'table-wrap'}, el('table',{}, el('thead',{}, el('tr',{}, el('th',{},'Élément'), el('th',{},'Jobs liés'), el('th',{},'Inventaire lié'))), tbody)));
+    }
+    slot.appendChild(card);
   });
-  table.appendChild(tbody); wrap.appendChild(table); card.appendChild(wrap);
-  slot.appendChild(card);
   slot.appendChild(fabIfAllowed(()=>openEquipmentModal()));
 }
-const EQUIPMENT_CATS = ['Propulsion','Sécurité','Navigation','Électrique','Pont & manutention','Autre'];
+/* arborescence : catégories (partagées par la flotte, réglage equipCats) > éléments (par navire) */
+const DEFAULT_EQUIP_CATS = ['Moteurs','Propulsion','Auxiliaire','Sécurité'];
+const DEFAULT_EQUIPMENT = [['Moteurs',['Moteur bâbord','Moteur tribord']], ['Propulsion',['LiLAA bâbord','LiLAA tribord']], ['Auxiliaire',['Grue','Rampe','Propulseur d’étrave']], ['Sécurité',['Évacuation','Incendie','Envahissement']]];
+const DEFAULT_EQUIPMENT_METERS = {'Moteur bâbord':'mp1', 'Moteur tribord':'mp2'}; // relie l'élément à ses compteurs et à sa consommation
+const EQUIP_LINK_KEYS = ['tasks','jobs','inventory','nonconformities','orders'];
+function equipmentCats(){
+  const s = setting('equipCats'), base = s && Array.isArray(s.items) ? s.items : DEFAULT_EQUIP_CATS;
+  const used = [...state.equipment.map(e=>e.categorie), ...EQUIP_LINK_KEYS.flatMap(k=>state[k].map(r=>r.equipCat))].filter(Boolean);
+  return [...new Set([...base, ...used])];
+}
+function equipmentCatUse(c){ return state.equipment.filter(e=>e.categorie===c).length + EQUIP_LINK_KEYS.reduce((n,k)=>n+state[k].filter(r=>r.equipCat===c).length, 0); }
+function renameEquipCat(from, to){
+  state.equipment.filter(e=>e.categorie===from).forEach(e=>updateDoc('equipment','equipment', e.id, {categorie:to}));
+  EQUIP_LINK_KEYS.forEach(k=>state[k].filter(r=>r.equipCat===from).forEach(r=>updateDoc(k, k, r.id, {equipCat:to})));
+}
+function openEquipCatsModal(){
+  const rows = equipmentCats().map(c=>({orig:c, name:c}));
+  const box = el('div',{});
+  const draw = ()=>{ box.innerHTML = ''; rows.forEach((r,i)=>{ const n = r.orig ? equipmentCatUse(r.orig) : 0;
+    box.appendChild(el('div',{class:'settings-row'}, el('input',{type:'text', class:'select', 'aria-label':'Nom de la catégorie', 'data-fk':'cat-nom-'+i, value:r.name, oninput:e=>{ r.name = e.target.value; }}),
+      el('span',{class:'hint', style:'margin:0;white-space:nowrap;'}, n+' lié(s)'),
+      el('button',{class:'btn-danger-text', type:'button', 'data-fk':'cat-retirer-'+i, disabled:n ? '' : null, onclick:()=>{ rows.splice(i,1); draw(); }}, 'Retirer'))); }); };
+  draw();
+  const input = el('input',{type:'text', class:'select', 'aria-label':'Nouvelle catégorie', 'data-fk':'nouvelle-cat', placeholder:'ex. Électricité'});
+  const add = ()=>{ const v = input.value.trim(); if(!v) return; rows.push({orig:null, name:v}); input.value = ''; draw(); };
+  openModal({title:'Catégories des éléments', readOnly:!canConfigure(),
+    body:el('div',{}, el('div',{class:'hint', style:'margin:0 0 8px;'}, 'Communes à toute la flotte. Renommer met à jour les fiches liées ; une catégorie utilisée ne peut pas être retirée.'), box,
+      el('div',{class:'settings-row'}, input, el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'ajouter-cat', onclick:add}, 'Ajouter'))),
+    validate: ()=>{ const names = rows.map(r=>r.name.trim()); if(names.some(n=>!n)) return 'Une catégorie n’a pas de nom.'; return new Set(names.map(normText)).size<names.length ? 'Deux catégories portent le même nom.' : null; },
+    onSubmit: async ()=>{
+      rows.forEach(r=>{ if(r.orig && r.name.trim()!==r.orig) renameEquipCat(r.orig, r.name.trim()); });
+      saveSetting('equipCats', {items:rows.map(r=>r.name.trim())});
+      logHistory('settings', 'equipCats', 'Catégories des éléments', 'modifié', null, rows.map(r=>r.name.trim()).join(', '));
+      toast('Catégories enregistrées');
+    }});
+}
+/* lien vers l'onglet Historique, déjà filtré sur une catégorie ou un élément */
+function equipHistoryLink(groupe, element, vessel){
+  return el('a',{class:'btn btn-ghost btn-sm', href:'#/maintenance-historique', 'data-fk':'voir-historique', onclick:()=>{ state._jh = {...jobHistoryDefaults(), vessels:[vessel], groupe, element}; closeAllModalsQuiet(); }}, 'Historique');
+}
 /* dans la fiche d'un élément : jobs récurrents, jobs ponctuels et articles liés */
 function linkedToEquipmentSection(eq){
   const tasks = state.tasks.filter(t=>t.equipmentId===eq.id);
@@ -5449,13 +5568,16 @@ function linkedToEquipmentSection(eq){
     el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>openJobModal(null, {vessel:eq.vessel, equipmentId:eq.id, nature:'Réparation de défaut'})}, 'Signaler un défaut sur cet élément')));
   return box;
 }
-function openEquipmentModal(eq){
+function openEquipmentModal(eq, prefill){
   const isEdit = !!eq;
+  const cats = equipmentCats();
   const body = el('div',{},
     field('Navire','vessel','select', VESSELS.map(v=>({v:v.key,l:v.name})), eq?.vessel||state.activeVessel),
     field('Nom de l’élément','name','text', null, eq?.name||'', 'ex. Moteur 1, Pompe de cale, Feux de navigation, Radio VHF'),
-    field('Catégorie','categorie','select', EQUIPMENT_CATS.map(c=>({v:c,l:c})), eq?.categorie||EQUIPMENT_CATS[0]),
+    field('Catégorie','categorie','select', cats.map(c=>({v:c,l:c})), eq?.categorie||prefill?.categorie||cats[0]),
+    field('Compteur associé','meter','select', [{v:'',l:'— Aucun'}, ...METERS.map(m=>({v:m.key, l:m.label+' — '+m.long}))], eq?.meter||'', 'relie à cet élément les relevés de carburant et d’huile de ce compteur'),
     field('Notes','notes','textarea', null, eq?.notes||''),
+    isEdit ? equipHistoryLink('', eq.id, eq.vessel) : null,
     isEdit ? linkedToEquipmentSection(eq) : null,
     isEdit ? equipmentDocsSection(eq.id, 'Documentation technique') : null
   );
@@ -5624,7 +5746,7 @@ function viewInventaire(slot){
   filtered.forEach(r=>{
     const low = inventoryIsLow(r);
     const lift = liftingStatus(r);
-    const eqn = equipmentName(r.equipmentId);
+    const eqn = equipLabel(r);
     const ordered = openOrderQty([r.id]);
     tbody.appendChild(el('tr',{class:'row-click', tabindex:'0', 'data-fk':'ligne-'+r.id, onclick:()=>openInventoryModal(r)},
       el('td',{}, el('div',{style:'font-weight:600'}, r.designation),
@@ -5769,10 +5891,10 @@ function openInventoryModal(r, prefill){
       field('Marque / équipement','marque','text', null, base.marque||'', 'ex. Scania, Cummins, Hydroarmor'),
       field('Fournisseur','fournisseur','text', null, base.fournisseur||'')),
     field('Référence fournisseur','refFournisseur','text', null, base.refFournisseur||'', 'ex. référence Le Teuff'),
-    field('Élément du navire lié','equipmentId','select', equipmentOptionsFor(loc.startsWith('site:') ? '' : loc), base.equipmentId||'', 'recommandé pour une pièce de rechange'),
+    field('Catégorie ou élément lié','equipmentId','select', equipmentLinkOptions(loc.startsWith('site:') ? '' : loc), linkValue(base), 'recommandé pour une pièce de rechange'),
     liftBox,
     fieldRow(
-      field('Catégorie','categorie','text', null, base.categorie||'', 'ex. Huiles, Filtres, EPI, Électricité, Élingues'),
+      field('Famille de pièce','categorie','text', null, base.categorie||'', 'ex. Huiles, Filtres, EPI, Électricité, Élingues'),
       field('Emplacement','emplacement','text', null, base.emplacement||'')
     ),
     fieldRow(
@@ -5790,6 +5912,7 @@ function openInventoryModal(r, prefill){
     isEdit ? recordHistorySection(r) : null
   );
   const natureSel = $('[name=nature]', body);
+  bindEquipLink(body);
   const syncLift = ()=>{ liftBox.style.display = natureSel.value==='levage' ? '' : 'none'; };
   natureSel.addEventListener('change', syncLift); syncLift();
   openModal({
@@ -5800,10 +5923,10 @@ function openInventoryModal(r, prefill){
     validate: (data)=>requireField(data,'designation','La désignation') || requireField(data,'nature','Le type d’article'),
     onDelete: isEdit ? async ()=>{ await deleteDoc('inventory','inventory', r.id); await logHistory('inventory', r.id, r.designation, 'supprimé', r.vessel||null); toast('Article supprimé'); } : null,
     onSubmit: async (data)=>{
-      if(String(data.vessel).startsWith('site:')){ data.site = data.vessel.slice(5); data.vessel = ''; data.equipmentId = ''; }
+      if(String(data.vessel).startsWith('site:')){ data.site = data.vessel.slice(5); data.vessel = ''; if(!String(data.equipmentId).startsWith('cat:')) data.equipmentId = ''; }
       else data.site = '';
       ['quantite','seuilAlerte','enPlace'].forEach(k=>{ data[k] = data[k]==='' ? null : Number(data[k]); });
-      data.equipmentId = data.equipmentId || null;
+      applyEquipLink(data);
       if(data.nature!=='levage'){ ['cmu','longueur','etat','dateMiseEnService','dateControle','dateVerification'].forEach(k=>{ data[k] = base[k]||''; }); }
       else if(!data.dateVerification && data.dateControle) data.dateVerification = addDays(data.dateControle, 365);
       if(isEdit){
@@ -6382,6 +6505,7 @@ function openOrderModal(r, prefill){
   const body = el('div',{},
     field('Pour','vessel','select', [...VESSELS.map(v=>({v:v.key,l:v.name})), {v:'', l:COMPANY_LABEL+' (siège, chantier, stock à terre)'}], vessel),
     field('Article de l’inventaire','inventoryId','select', [{v:'',l:'—'}], '', 'la réception ajoutera la quantité au stock de cet article'),
+    field('Catégorie ou élément concerné','equipmentId','select', equipmentLinkOptions(vessel), linkValue(base), 'facultatif si l’article de l’inventaire est déjà lié'),
     fieldRow(
       field('Désignation','designation','text', null, base.designation||''),
       field('Référence','reference','text', null, base.reference||'')),
@@ -6418,6 +6542,7 @@ function openOrderModal(r, prefill){
   };
   fillInv(true);
   vesselSel.addEventListener('change', ()=>fillInv(false));
+  bindEquipLink(body);
   invSel.addEventListener('change', ()=>{
     const i = state.inventory.find(x=>x.id===invSel.value);
     if(!i) return;
@@ -6441,6 +6566,7 @@ function openOrderModal(r, prefill){
       data.quantite = data.quantite===''?null:Number(data.quantite);
       data.prixEstime = data.prixEstime===''?null:Number(data.prixEstime);
       data.inventoryId = data.inventoryId || null;
+      applyEquipLink(data);
       data.fournisseurEmail = data.fournisseurEmail.trim();
       data.attachments = attachEl._getList();
       const wasReceived = isEdit && r.statut==='Reçu';
@@ -6513,7 +6639,7 @@ function offerAddToInventory(orderData){
         const item = state.inventory.find(i=>i.id===data.targetId);
         if(item) stockMove(item, qty, 'Réception commande', {orderId:orderData.id||null});
       }else{
-        const newData = {vessel:orderData.vessel, designation:orderData.designation, reference:orderData.reference||'', nature:data.nature||'consommable', quantite:qty, categorie:'', unite:'', emplacement:'', equipmentId:null, notes:'Créé depuis une commande reçue',
+        const newData = {vessel:orderData.vessel, designation:orderData.designation, reference:orderData.reference||'', nature:data.nature||'consommable', quantite:qty, categorie:'', unite:'', emplacement:'', equipmentId:orderData.equipmentId||null, equipCat:orderData.equipCat||null, notes:'Créé depuis une commande reçue',
           mouvements:[{id:uid(), date:todayISO(), at:new Date().toISOString(), by:state.me.name||null, qty, motif:'Réception commande', orderId:orderData.id||null}]};
         itemId = await addDoc('inventory','inventory', newData);
         await logHistory('inventory', itemId, newData.designation, 'créé', newData.vessel, 'Depuis réception commande');
@@ -6551,11 +6677,18 @@ function copyEquipmentId(id, toVessel){
   const same = state.equipment.find(e=>e.vessel===toVessel && (e.name||'').trim().toLowerCase()===(src.name||'').trim().toLowerCase());
   return same ? same.id : null;
 }
+/* conflits avant copie : une fiche de même intitulé existe déjà sur le navire de destination */
+function copyConflicts(kind, records, targets){
+  const def = COPY_KINDS[kind], out = [];
+  targets.forEach(to=>records.forEach(r=>{ if(r.vessel!==to && state[kind].some(x=>x.vessel===to && normText(def.title(x))===normText(def.title(r)))) out.push({r, to}); }));
+  return out;
+}
 function copyRecordsToVessels(kind, records, targets, opts){
   const def = COPY_KINDS[kind];
   let n = 0;
+  const clash = opts && opts.skipConflicts ? new Set(copyConflicts(kind, records, targets).map(c=>c.r.id+'>'+c.to)) : new Set();
   targets.forEach(to=>records.forEach(r=>{
-    if(r.vessel===to) return;
+    if(r.vessel===to || clash.has(r.id+'>'+to)) return;
     const copy = def.make(clone(r), to, opts||{});
     delete copy.id; delete copy.createdAt; delete copy.updatedAt; delete copy.updatedBy;
     const id = addDoc(kind, kind, copy);
@@ -6564,10 +6697,17 @@ function copyRecordsToVessels(kind, records, targets, opts){
   }));
   return n;
 }
-function openCopyToVesselModal(kind, fromVessel){
+function openCopyToVesselModal(kind, fromVessel, preselect){
   const def = COPY_KINDS[kind];
   let from = fromVessel || state.activeVessel;
-  const picked = new Set();
+  const picked = new Set(preselect||[]);
+  const conflictBox = el('div',{'data-fk':'copie-conflits'});
+  function drawConflicts(){
+    conflictBox.innerHTML = '';
+    const targets = ALL_VESSELS.filter(v=>{ const i = $('[name="cible-'+v.key+'"]', targetsBox); return i && i.checked; }).map(v=>v.key);
+    const list = copyConflicts(kind, state[kind].filter(r=>picked.has(r.id)), targets);
+    if(list.length) conflictBox.appendChild(el('div',{class:'banner', role:'status'}, el('div',{style:'flex:1;'}, list.length+' conflit(s) : '+list.slice(0, 8).map(c=>'« '+def.title(c.r)+' » existe déjà sur '+vesselName(c.to)).join(' ; ')+(list.length>8 ? '…' : ''))));
+  }
   let q = '';
   const listBox = el('div',{class:'copy-list'});
   const countEl = el('span',{class:'hint', style:'margin:0;'});
@@ -6586,9 +6726,9 @@ function openCopyToVesselModal(kind, fromVessel){
   function drawTargets(){
     targetsBox.innerHTML = '';
     ALL_VESSELS.filter(v=>v.key!==from).forEach(v=>targetsBox.appendChild(el('label',{class:'check'},
-      el('input',{type:'checkbox', name:'cible-'+v.key, value:'1', 'data-fk':'cible-'+v.key}), v.name)));
+      el('input',{type:'checkbox', name:'cible-'+v.key, value:'1', 'data-fk':'cible-'+v.key, onchange:drawConflicts}), v.name)));
   }
-  function drawCount(){ countEl.textContent = picked.size+' fiche(s) choisie(s)'; }
+  function drawCount(){ countEl.textContent = picked.size+' fiche(s) choisie(s)'; drawConflicts(); }
   const fromSel = el('select',{class:'select', 'aria-label':'Copier depuis le navire', 'data-fk':'copie-depuis', onchange:e=>{ from = e.target.value; picked.clear(); drawList(); drawTargets(); }},
     ...ALL_VESSELS.map(v=>el('option',{value:v.key}, v.name)));
   fromSel.value = from;
@@ -6601,7 +6741,8 @@ function openCopyToVesselModal(kind, fromVessel){
       countEl),
     listBox,
     el('div',{class:'lbl', style:'margin:12px 0 4px;font-weight:600;'}, 'Vers'),
-    targetsBox,
+    targetsBox, conflictBox,
+    field('En cas de conflit','conflits','select', [{v:'ignorer',l:'Ne pas copier les fiches déjà présentes'},{v:'copier',l:'Copier quand même (doublon)'}], 'ignorer'),
     kind==='inventory' ? field('Quantités','keepQty','select', [{v:'',l:'Mettre les quantités à 0 (stock à compter sur le navire)'},{v:'1',l:'Garder les mêmes quantités'}], '') : null,
     el('div',{class:'hint', style:'margin-top:8px;'}, 'Les copies repartent à neuf (pas d’historique de réalisations ni de mouvements) et restent modifiables. « Annuler » est possible juste après.'));
   drawList(); drawTargets();
@@ -6616,7 +6757,7 @@ function openCopyToVesselModal(kind, fromVessel){
     onSubmit: async data=>{
       const targets = ALL_VESSELS.filter(v=>{ const i = $('[name="cible-'+v.key+'"]', body); return i && i.checked; }).map(v=>v.key);
       const records = state[kind].filter(r=>picked.has(r.id));
-      const n = copyRecordsToVessels(kind, records, targets, {keepQty: data.keepQty==='1'});
+      const n = copyRecordsToVessels(kind, records, targets, {keepQty: data.keepQty==='1', skipConflicts: data.conflits!=='copier'});
       toast(n+' fiche(s) copiée(s) vers '+targets.map(vesselName).join(', '), 'success');
     }
   });
@@ -6639,6 +6780,7 @@ const FUEL_TANKS = [
   {k:'hu-bd', l:'Huile propulsion bâbord', type:'Huile moteur', meter:'mp1'},
   {k:'hu-td', l:'Huile propulsion tribord', type:'Huile moteur', meter:'mp2'},
   {k:'hu-aux', l:'Huile caisse auxiliaire', type:'Huile moteur', meter:'dg'},
+  {k:'res-bidon', l:'Bidon de réserve', type:'Huile moteur'},
 ];
 const tankDef = k=>FUEL_TANKS.find(t=>t.k===k) || {k, l:k||'Caisse', type:'Autre'};
 const numOrNull = v=>v==='' || v==null || isNaN(v) ? null : Number(v);
@@ -6655,9 +6797,10 @@ function fuelEntries(){
   if(m && m.ref===state.fuel && m.len===state.fuel.length && m.seq===state.changeSeq) return m.out;
   const out = [];
   state.fuel.forEach(r=>{
+    if(r.type===FUEL_LEVELS) return; // un relevé de niveau n'est pas une entrée de carburant
     if(Array.isArray(r.lignes)) r.lignes.forEach(l=>{
       const t = tankDef(l.caisse);
-      out.push({vessel:r.vessel||'', date:r.date, type:t.type, caisse:t.k, quantite:Number(l.quantite)||0, unite:'L', compteur:t.meter||null,
+      out.push({vessel:r.vessel||'', date:r.date, type:t.type, caisse:t.k, quantite:Number(l.quantite)||0, unite:'L', compteur:t.meter||'aucun',
         cost:lineCost(l.quantite, l.prixLitre, l.prixTotal), rec:r});
     });
     else out.push({vessel:r.vessel||'', date:r.date, type:r.type, quantite:Number(r.quantite)||0, unite:r.unite, compteur:r.compteur||null,
@@ -6728,15 +6871,16 @@ function viewCarburant(slot){
   const company = !!state._fuelCompany;
   slot.appendChild(companyTabs('_fuelCompany', 'Achats de la compagnie : gasoil ou huile stockés au chantier ou à terre'));
   const owner = company ? '' : state.activeVessel;
-  const rows = state.fuel.filter(r=>(r.vessel||'')===owner).slice().sort((a,b)=>(b.date||'').localeCompare(a.date||'') || (b.createdAt||'').localeCompare(a.createdAt||''));
+  const rows = state.fuel.filter(r=>(r.vessel||'')===owner && r.type!==FUEL_LEVELS).slice().sort((a,b)=>(b.date||'').localeCompare(a.date||'') || (b.createdAt||'').localeCompare(a.createdAt||''));
   slot.appendChild(el('div',{class:'section-sub', style:'margin-bottom:10px;'}, company
     ? 'Achats de la compagnie (gasoil, huiles…) stockés au chantier ou dans un autre lieu à terre, avec leur prix et leur facture.'
-    : 'Soutages (pleins caisse par caisse, prix, trip log, facture) et relevés : chaque relevé peut mettre à jour le compteur MP bâbord, MP tribord ou DG du navire.'));
+    : 'Soutages (entrées caisse par caisse, prix, trip log, facture), relevés du niveau des caisses et appoints. Chaque saisie peut mettre à jour le compteur MP bâbord, MP tribord ou GE du navire.'));
   slot.appendChild(el('div',{class:'toolbar', style:'justify-content:flex-end;'},
     el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'carburant-csv', onclick:()=>downloadFile('seaway-carburant-'+(owner||'compagnie')+'-'+todayISO()+'.csv', toCSV(rows, CSV_EXPORTS.find(x=>x.key==='fuel').cols))}, 'Exporter CSV'),
     !company && canInput() ? el('button',{class:'btn btn-primary', type:'button', 'data-fk':'nouveau-soutage', onclick:()=>openSoutageModal(null, {vessel:owner})}, el('span',{html:iconPlus()}), 'Nouveau soutage') : null,
     company && canInput() ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'transfert-carburant', onclick:openFuelTransferModal}, 'Transférer vers un navire…') : null,
-    canInput() ? el('button',{class:company ? 'btn btn-accent' : 'btn btn-ghost', type:'button', 'data-fk':'nouveau-releve', onclick:()=>openFuelModal(null, {vessel:owner})}, el('span',{html:iconPlus()}), company ? 'Nouvel achat' : 'Nouveau relevé') : null));
+    canInput() ? el('button',{class:company ? 'btn btn-accent' : 'btn btn-ghost', type:'button', 'data-fk':'nouveau-releve', onclick:()=>openFuelModal(null, {vessel:owner})}, el('span',{html:iconPlus()}), company ? 'Nouvel achat' : 'Appoint / autre') : null));
+  if(!company) slot.appendChild(tankLevelsCard(owner));
   if(company){
     const stock = companyFuelStock();
     if(stock.length){
@@ -7062,9 +7206,9 @@ function crewTodayPlan(m){ return crewPlanAt(m.id, todayISO()); }
 
 function viewEquipage(slot){
   slot.innerHTML='';
-  slot.appendChild(el('div',{class:'banner'}, 'Données personnelles (identité, passeport, date de naissance) : partagez le fichier de données avec discernement. Les profils et niveaux d’accès ne les protègent pas.'));
+  slot.appendChild(el('div',{class:'banner'}, 'Données personnelles (identité, coordonnées, date de naissance) : partagez le fichier de données avec discernement. Les profils et niveaux d’accès ne les protègent pas.'));
   const search = el('div',{class:'search-box'}, el('span',{html:iconSearch()}),
-    el('input',{type:'search', 'aria-label':'Rechercher un marin…', 'data-fk':'recherche', placeholder:'Rechercher (nom, poste, passeport)…', value:state._crewSearch||'',
+    el('input',{type:'search', 'aria-label':'Rechercher un marin…', 'data-fk':'recherche', placeholder:'Rechercher (nom, poste, téléphone, e-mail)…', value:state._crewSearch||'',
       oninput:e=>{ state._crewSearch = e.target.value.toLowerCase(); renderContent(); }}));
   const vesselSel = el('select',{class:'select', 'aria-label':'À bord aujourd’hui', 'data-fk':'filtre-navire', onchange:e=>{ state._crewVessel = e.target.value; renderContent(); }},
     el('option',{value:''},'Tous les marins'), ...VESSELS.map(v=>el('option',{value:v.key}, 'À bord du '+v.name+' aujourd’hui')), el('option',{value:'__terre'},'Pas à bord aujourd’hui'));
@@ -7077,7 +7221,7 @@ function viewEquipage(slot){
   else if(state._crewVessel) members = members.filter(m=>planVesselOf(crewTodayPlan(m))===state._crewVessel);
   if(state._crewSearch){
     const q = state._crewSearch;
-    members = members.filter(m=>[crewFullName(m), m.poste, m.passeport].join(' ').toLowerCase().includes(q));
+    members = members.filter(m=>[crewFullName(m), m.poste, m.telephone, m.email].join(' ').toLowerCase().includes(q));
   }
   members.sort((a,b)=>(a.nom||'').localeCompare(b.nom||'','fr') || (a.prenom||'').localeCompare(b.prenom||'','fr'));
 
@@ -7097,7 +7241,8 @@ function viewEquipage(slot){
     const prof = state.users.find(u=>u.crewId===m.id);
     tbody.appendChild(el('tr',{class:'row-click', tabindex:'0', 'data-fk':'ligne-'+m.id, onclick:()=>openCrewModal(m)},
       el('td',{}, el('div',{style:'font-weight:600;'}, [m.nom ? m.nom.toUpperCase() : '', m.prenom].filter(Boolean).join(' ') || 'Sans nom'),
-        m.passeport ? el('div',{class:'hint', style:'margin:2px 0 0;'}, 'Passeport '+m.passeport) : null),
+        m.telephone || m.email ? el('div',{class:'hint', style:'margin:2px 0 0;'}, [m.telephone, m.email].filter(Boolean).join(' · ')) : null,
+        m.habilGrue==='oui' || (m.qualifBateaux||[]).length ? el('div',{class:'hint', style:'margin:2px 0 0;'}, [(m.qualifBateaux||[]).length ? 'Qualifié : '+m.qualifBateaux.map(vesselName).join(', ') : '', m.habilGrue==='oui' ? 'Grue'+((m.qualifGrue||[]).length ? ' : '+m.qualifGrue.map(vesselName).join(', ') : '') : ''].filter(Boolean).join(' · ')) : null),
       el('td',{}, m.poste||'—'),
       el('td',{}, r ? el('span',{class:'pj-legend', style:'--c:'+crewPlanColor(r.code)}, r.code||'?') : null, r ? crewPlanLabel(r) : el('span',{class:'hint', style:'margin:0;'}, 'non planifié')),
       el('td',{}, prof ? el('div',{}, el('div',{style:'font-weight:600;'}, profileFullName(prof)), el('div',{class:'hint', style:'margin:2px 0 0;'}, roleDef(prof.role).label+(profileActive(prof) ? '' : ' · désactivé')))
@@ -7116,16 +7261,21 @@ function viewEquipage(slot){
 function openCrewModal(m, prefill){
   const isEdit = !!m;
   const base = m || prefill || {};
+  const qualifB = new Set(base.qualifBateaux||[]), qualifG = new Set(base.qualifGrue||[]);
+  const vesselChecks = (label, set, fk)=>el('div',{class:'field'}, el('div',{class:'field-label'}, label), el('div',{class:'apply-days'}, ...ALL_VESSELS.map(v=>el('label',{}, el('input',{type:'checkbox', 'data-fk':fk+'-'+v.key, checked:set.has(v.key) ? '' : null, disabled:canEdit() ? null : '', onchange:e=>{ if(e.target.checked) set.add(v.key); else set.delete(v.key); }}), ' '+v.name))));
   const body = el('div',{},
     fieldRow(
       field('Nom','nom','text', null, base.nom||''),
       field('Prénom','prenom','text', null, base.prenom||'')
     ),
     crewPostInput(field('Poste habituel','poste','text', null, base.poste||'')),
-    fieldRow(
-      field('N° de passeport','passeport','text', null, base.passeport||''),
-      field('Date de naissance','dateNaissance','date', null, base.dateNaissance||'')
-    ),
+    fieldRow(field('Téléphone','telephone','tel', null, base.telephone||''), field('Adresse e-mail','email','email', null, base.email||'')),
+    field('Adresse postale','adresse','textarea', null, base.adresse||''),
+    field('Date de naissance','dateNaissance','date', null, base.dateNaissance||''),
+    vesselChecks('Qualifié sur les navires', qualifB, 'qb'),
+    field('Habilitation grue','habilGrue','select', [{v:'non',l:'Non'},{v:'oui',l:'Oui'}], base.habilGrue||'non'),
+    vesselChecks('Qualifié grue sur les navires', qualifG, 'qg'),
+    isEdit && (canSeeCrewDocs(m.id,'certificat') || canSeeCrewDocs(m.id,'note')) ? el('a',{class:'btn btn-ghost btn-sm', href:'#/certificats-equipage', 'data-fk':'crew-docs', onclick:()=>{ state._cd = {tab:'certificat', crew:m.id}; closeAllModalsQuiet(); }}, 'Certificats et feuilles de notes') : null,
     field('Notes','notes','textarea', null, base.notes||''),
     crewProfileField(m),
     isEdit ? (()=>{
@@ -7157,11 +7307,12 @@ function openCrewModal(m, prefill){
     } : null,
     onSubmit: async data=>{
       data.nom = data.nom.trim(); data.prenom = data.prenom.trim();
+      data.qualifBateaux = [...qualifB]; data.qualifGrue = data.habilGrue==='oui' ? [...qualifG] : [];
       const profil = data.profil; delete data.profil;
       let id = m && m.id;
       if(isEdit){
         updateDoc('crew','crew', m.id, data);
-        logHistory('crew', m.id, crewFullName(data), 'modifié', null, diffSummary(m, data, [['poste','Poste'],['passeport','Passeport']]));
+        logHistory('crew', m.id, crewFullName(data), 'modifié', null, diffSummary(m, data, [['poste','Poste'],['telephone','Téléphone'],['habilGrue','Habilitation grue']]));
         toast('Fiche mise à jour');
       }else{
         id = addDoc('crew','crew', data);
@@ -7606,7 +7757,7 @@ function viewConsommations(slot){
   const tile = (k, val, sub)=>tiles.appendChild(el('div',{class:'card stat-card'}, el('div',{class:'k'}, k), el('div',{class:'v conso-v'}, val), sub ? el('div',{class:'stat-sub'}, sub) : null));
   tile('Heures de fonctionnement', fmtNum(tot.totalHours)+' h', METERS.map(m=>m.label+' '+fmtNum(tot.hours[m.key])+' h').join(' · '));
   tile('Gazole reçu', fmtNum(tot.gazole)+' L', period.label);
-  tile('Consommation spécifique', tot.rate!=null ? fmtNum(tot.rate,1)+' L/h' : '—', tot.rate!=null ? 'gazole ÷ heures MP bâbord + MP tribord + DG' : 'heures ou gazole insuffisants sur la période');
+  tile('Consommation spécifique', tot.rate!=null ? fmtNum(tot.rate,1)+' L/h' : '—', tot.rate!=null ? 'gazole ÷ heures MP bâbord + MP tribord + GE' : 'heures ou gazole insuffisants sur la période');
   tile('Huile moteur', fmtNum(tot.oilTotal)+' L', METERS.map(m=>tot.oilRate(m.key)!=null ? m.label+' '+fmtNum(tot.oilRate(m.key),1)+' L/100 h' : null).filter(Boolean).join(' · ') || 'appoints par compteur');
   slot.appendChild(tiles);
 
@@ -7765,7 +7916,7 @@ const CONSO_CSV_COLS = [
    et les pages du menu. Tous les mots tapés doivent se retrouver (accents et
    majuscules ignorés). Le résultat ouvre la page du module puis la fiche. */
 const SEARCH_SOURCES = [
-  {key:'tasks', label:'Jobs récurrents', route:'#/entretien', text:r=>[r.task, r.category, r.observations, equipmentName(r.equipmentId)], title:r=>r.task, sub:r=>vesselName(r.vessel)+' · '+(r.category||'')+' · '+taskDueText(r), open:r=>openTaskModal(r)},
+  {key:'tasks', label:'Jobs récurrents', route:'#/entretien', text:r=>[r.task, r.category, r.observations, equipLabel(r)], title:r=>r.task, sub:r=>vesselName(r.vessel)+' · '+(r.category||'')+' · '+taskDueText(r), open:r=>openTaskModal(r)},
   {key:'jobs', label:'Jobs ponctuels', route:'#/entretien', text:r=>[r.titre, r.description, r.assigneA, r.nature], title:r=>r.titre, sub:r=>vesselName(r.vessel)+' · '+(r.statut||'À faire'), open:r=>openJobModal(r)},
   {key:'nonconformities', label:'Défaut/NC', route:'#/defauts', text:r=>[r.numero, r.titre, r.description, r.besoin, r.commentaires, r.responsable], title:r=>ncLabel(r), sub:r=>(r.vessel ? vesselName(r.vessel) : 'Flotte')+' · '+(r.statut||'Ouverte'), open:r=>openNcModal(r)},
   {key:'inventory', label:'Inventaire', route:'#/inventaire', text:r=>[r.designation, r.reference, r.refFournisseur, r.marque, r.fournisseur, r.emplacement], title:r=>r.designation, sub:r=>invLocName(r)+' · '+(r.quantite ?? 0)+' '+(r.unite||'')+(r.reference ? ' · réf. '+r.reference : ''), open:r=>openInventoryModal(r)},
@@ -7866,6 +8017,347 @@ function renderNetPill(){
   box.appendChild(el('span',{class:'net-dot', 'aria-hidden':'true'}));
   box.appendChild(el('span',{class:'net-label'}, st.label));
   box.appendChild(el('span',{class:'net-detail'}, st.detail));
+}
+
+/* en-tête de colonne triable : f garde {sort, dir} (dir : 1 croissant, -1 décroissant) */
+function sortableTh(label, key, f){
+  const on = f.sort===key;
+  return el('th',{'aria-sort': on ? (f.dir>0 ? 'ascending' : 'descending') : null},
+    el('button',{type:'button', class:'th-sort'+(on ? ' active' : ''), 'data-fk':'tri-'+key, onclick:()=>{ if(on) f.dir = -f.dir; else{ f.sort = key; f.dir = 1; } renderContent(); }}, label+(on ? (f.dir>0 ? ' ▲' : ' ▼') : '')));
+}
+function sortRows(rows, f, getters){
+  const get = getters[f.sort];
+  if(!get) return rows;
+  return rows.slice().sort((a,b)=>f.dir*String(get(a)??'').localeCompare(String(get(b)??''),'fr',{numeric:true}));
+}
+
+/* ===================== HISTORIQUE DES JOBS (Maintenance) =====================
+   Tous les jobs liés à une sélection de navires, de groupes ou d'éléments :
+   réalisations des jobs récurrents, état actuel de ces jobs, jobs ponctuels. */
+function jobHistoryDefaults(){ return {vessels:VESSELS.map(v=>v.key), groupe:'', element:'', recurrents:true, ponctuels:true, defauts:true, pieces:true, commandes:true, carburant:true, statut:'', sort:'date', dir:-1}; }
+function jobHistoryRows(f){
+  const eq = id=>state.equipment.find(e=>e.id===id)||null;
+  const matches = r=>f.element ? r.equipmentId===f.element : !f.groupe || r.equipCat===f.groupe || (eq(r.equipmentId)||{}).categorie===f.groupe;
+  const keep = r=>(f.vessels.includes(r.vessel) || (!r.vessel && !f.element)) && matches(r); // sans navire : compagnie, flotte
+  const linked = r=>keep(r) && !!(r.equipmentId || r.equipCat);
+  const rows = [];
+  if(f.recurrents) state.tasks.filter(keep).forEach(t=>{
+    const s = taskStatus(t);
+    rows.push({key:'t'+t.id, type:'Récurrent', vessel:t.vessel, titre:t.task, element:equipLabel(t)||'', date:t.nextDate||'', statut:s==='retard' ? 'En retard' : 'À faire', par:'', note:taskDueText(t), open:()=>openTaskModal(t)});
+    (t.completions||[]).forEach((c,i)=>rows.push({key:'c'+t.id+i, type:'Récurrent', vessel:t.vessel, titre:t.task, element:equipLabel(t)||'', date:c.date||'', statut:'Fait', par:c.by||'', note:c.commentaire||'', files:c.attachments, open:()=>openCompletionModal(t, c)}));
+  });
+  if(f.ponctuels) state.jobs.filter(keep).forEach(j=>rows.push({key:'j'+j.id, type:'Ponctuel', vessel:j.vessel, titre:j.titre, element:equipLabel(j)||'',
+    date:j.dateRealisation||j.dateEcheance||(j.createdAt||'').slice(0,10), statut:jobStatusLabel(j.statut), par:j.assigneA||'', note:j.description||'', files:j.attachments, open:()=>openJobModal(j)}));
+  if(f.defauts) state.nonconformities.filter(keep).forEach(n=>rows.push({key:'n'+n.id, type:'Défaut', vessel:n.vessel||'', titre:ncLabel(n), element:equipLabel(n)||'', date:n.dateConstat||'', statut:n.statut||'', par:n.responsable||n.constatePar||'', note:n.description||'', files:n.attachments, open:()=>openNcModal(n)}));
+  if(f.pieces) state.inventory.forEach(i=>{
+    const on = linked(i), unit = i.unite ? ' '+i.unite : '';
+    if(on) rows.push({key:'i'+i.id, type:'Pièce', vessel:i.vessel||'', titre:i.designation, element:equipLabel(i)||'', date:'', statut:'En stock', par:'', note:(i.quantite ?? 0)+unit+(i.reference ? ' · réf. '+i.reference : ''), open:()=>openInventoryModal(i)});
+    (i.mouvements||[]).forEach(m=>{
+      const src = m.taskId ? state.tasks.find(t=>t.id===m.taskId) : m.jobId ? state.jobs.find(j=>j.id===m.jobId) : null; // sortie faite pour un job lié
+      const bySrc = !!src && linked(src);
+      if(!on && !bySrc) return;
+      rows.push({key:'m'+i.id+m.id, type:m.qty<0 ? 'Consommation' : 'Entrée de stock', vessel:i.vessel||'', titre:i.designation, element:equipLabel(bySrc ? src : i)||'', date:m.date||'', statut:m.qty<0 ? 'Sorti' : 'Entré', par:m.by||'', note:Math.abs(m.qty)+unit+(m.motif ? ' · '+m.motif : ''), open:()=>openInventoryModal(i)});
+    });
+  });
+  if(f.commandes) state.orders.forEach(o=>{
+    const target = (o.equipmentId || o.equipCat) ? o : state.inventory.find(i=>i.id===o.inventoryId); // sinon, le lien de l'article commandé
+    if(!target || !linked({equipmentId:target.equipmentId, equipCat:target.equipCat, vessel:o.vessel||''})) return;
+    rows.push({key:'o'+o.id, type:'Commande', vessel:o.vessel||'', titre:o.designation, element:equipLabel(target)||'', date:o.dateReception||o.dateCommande||(o.createdAt||'').slice(0,10), statut:o.statut||'', par:o.suiviPar||o.demandeur||'', note:[o.quantite!=null ? 'Qté '+o.quantite : '', o.fournisseur].filter(Boolean).join(' · '), files:o.attachments, open:()=>openOrderModal(o)});
+  });
+  if(f.carburant){
+    // appoints et relevés rattachés à un compteur, donc à l'élément qui porte ce compteur
+    fuelEntries().forEach((e,i)=>{
+      const q = e.compteur && e.compteur!=='aucun' ? state.equipment.find(x=>x.vessel===e.vessel && x.meter===e.compteur) : null;
+      if(!q || !keep({vessel:e.vessel, equipmentId:q.id})) return;
+      rows.push({key:'f'+e.rec.id+i, type:'Carburant / huile', vessel:e.vessel, titre:e.type+(e.caisse ? ' — '+tankDef(e.caisse).l : ''), element:q.name, date:e.date||'', statut:'Entrée', par:'', note:fmtNum(e.quantite)+' '+(e.unite||'L'), open:()=>openFuelModal(e.rec)});
+    });
+    // consommation entre deux relevés de caisses : les caisses communiquent, elle n'est pas attribuable à un seul moteur
+    if(!f.element) VESSELS.filter(v=>f.vessels.includes(v.key) && (!f.groupe || state.equipment.some(x=>x.vessel===v.key && x.meter && x.categorie===f.groupe))).forEach(v=>tankRows(v.key).forEach(x=>{
+      [['Gasoil', x.goConso, 'g'], ['Huile', x.oilConso, 'h']].forEach(([l, q, c])=>{ if(q!=null) rows.push({key:'r'+c+x.r.id, type:'Consommation carburant', vessel:v.key, titre:l+' (total des caisses)', element:'Toutes caisses', date:x.r.date, statut:'Relevé', par:'', note:fmtNum(q)+' L depuis le relevé précédent', open:()=>openTankLevelModal(v.key, x.r)}); });
+    }));
+  }
+  return rows;
+}
+function viewJobHistory(slot){
+  slot.innerHTML = '';
+  const f = state._jh = state._jh || jobHistoryDefaults();
+  f.vessels = f.vessels.filter(k=>VESSELS.some(v=>v.key===k));
+  const eqs = state.equipment.filter(e=>f.vessels.includes(e.vessel));
+  const groupes = equipmentCats();
+  if(f.groupe && !groupes.includes(f.groupe)) f.groupe = '';
+  const elements = eqs.filter(e=>!f.groupe || e.categorie===f.groupe).sort((a,b)=>a.name.localeCompare(b.name,'fr'));
+  if(f.element && !elements.some(e=>e.id===f.element)) f.element = '';
+  const allRows = jobHistoryRows(f), statuts = [...new Set(allRows.map(r=>r.statut).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'fr'));
+  if(f.statut && !statuts.includes(f.statut)) f.statut = '';
+  const sel = (fk, label, key, opts)=>{ const s = el('select',{class:'select', 'aria-label':label, 'data-fk':fk, onchange:e=>{ f[key] = e.target.value; renderContent(); }}, ...opts.map(([v,l])=>el('option',{value:v}, l))); s.value = f[key]; return s; };
+  const chk = (fk, label, on, set)=>el('label',{class:'check'}, el('input',{type:'checkbox', 'data-fk':fk, checked:on ? '' : null, onchange:e=>{ set(e.target.checked); renderContent(); }}), label);
+  slot.appendChild(el('div',{class:'toolbar jh-vessels', role:'group', 'aria-label':'Navires'},
+    ...VESSELS.map(v=>chk('jh-navire-'+v.key, v.name, f.vessels.includes(v.key), on=>{ f.vessels = on ? [...f.vessels, v.key] : f.vessels.filter(k=>k!==v.key); })),
+    el('span',{style:'width:12px;'}), chk('jh-recurrents', 'Jobs récurrents', f.recurrents, on=>{ f.recurrents = on; }), chk('jh-ponctuels', 'Jobs ponctuels', f.ponctuels, on=>{ f.ponctuels = on; }),
+    chk('jh-defauts', 'Défauts', f.defauts, on=>{ f.defauts = on; }), chk('jh-pieces', 'Pièces et consommation', f.pieces, on=>{ f.pieces = on; }), chk('jh-commandes', 'Commandes', f.commandes, on=>{ f.commandes = on; }), chk('jh-carburant', 'Carburant et huile', f.carburant, on=>{ f.carburant = on; })));
+  slot.appendChild(el('div',{class:'toolbar'},
+    sel('jh-groupe', 'Groupe d’éléments', 'groupe', [['','Tous groupes'], ...groupes.map(g=>[g,g])]),
+    sel('jh-element', 'Élément', 'element', [['','Tous éléments'], ...elements.map(e=>[e.id, e.name+(f.vessels.length>1 ? ' — '+vesselName(e.vessel) : '')])]),
+    sel('jh-statut', 'Statut', 'statut', [['','Tous statuts'], ...statuts.map(x=>[x,x])])));
+  const rows = sortRows(f.statut ? allRows.filter(r=>r.statut===f.statut) : allRows, f, {date:r=>r.date, statut:r=>r.statut, navire:r=>ownerName(r.vessel), titre:r=>r.titre, type:r=>r.type, element:r=>r.element});
+  if(!rows.length){ slot.appendChild(el('div',{class:'card empty'}, el('h3',{}, 'Aucune ligne'), 'Rien ne correspond à cette sélection.')); return; }
+  const cls = {'Fait':'ok','En retard':'retard','En cours':'proche','Ouverte':'retard','Action en cours':'proche','Clôturée':'ok','Reçu':'ok'};
+  slot.appendChild(el('div',{class:'card', style:'padding:16px 18px;'},
+    el('div',{class:'section-sub', style:'margin-bottom:8px;'}, rows.length+' ligne(s). Cliquez un titre de colonne pour trier. Pièces et commandes : celles liées à une catégorie ou un élément.'+(canEditDoneJob() ? ' Un job fait se modifie en ouvrant sa ligne.' : '')),
+    el('div',{class:'table-wrap'}, el('table',{'data-fk':'jh-table'},
+      el('thead',{}, el('tr',{}, sortableTh('Date','date',f), sortableTh('Navire','navire',f), sortableTh('Job','titre',f), sortableTh('Type','type',f), sortableTh('Élément','element',f), sortableTh('Statut','statut',f), el('th',{},'Par'), el('th',{},'Compte rendu'))),
+      el('tbody',{}, ...rows.map(r=>el('tr',{class:'row-click', tabindex:'0', 'data-fk':'jh-'+r.key, onclick:r.open},
+        el('td',{style:'white-space:nowrap;'}, r.date ? fmtDate(r.date) : '—'), el('td',{}, ownerName(r.vessel)), el('td',{style:'font-weight:600;'}, r.titre), el('td',{}, r.type), el('td',{}, r.element||'—'),
+        el('td',{html:'<span class="badge '+(cls[r.statut]||'inconnu')+'">'+esc(r.statut)+'</span>'}), el('td',{}, r.par||'—'), el('td',{class:'nc-cell-long'}, r.note||'', (r.files||[]).length ? ' 📎'+r.files.length : ''))))))));
+}
+/* réalisation d'un job récurrent : consultée par tous, modifiable par le capitaine et l'administrateur */
+function openCompletionModal(t, c){
+  const byHours = t.unit==='heures';
+  const attachEl = attachmentsEditor(c.attachments, {label:'Rapports et photos'});
+  const body = el('div',{}, el('div',{class:'hint', style:'margin:0 0 8px;'}, vesselName(t.vessel)+' · '+t.task),
+    fieldRow(field('Fait le','date','date', null, c.date||''), field('Par','by','text', null, c.by||'')),
+    byHours ? field('Compteur (h)','heures','number', null, c.heures ?? '') : null,
+    field('Compte rendu','commentaire','textarea', null, c.commentaire||''), attachEl);
+  openModal({title:'Réalisation — '+t.task, body, readOnly:!canEditDoneJob(),
+    validate: d=>d.date ? null : 'La date est obligatoire.',
+    onSubmit: async d=>{
+      const updated = {...c, date:d.date, by:d.by.trim()||null, commentaire:d.commentaire, attachments:attachEl._getList()};
+      if(byHours) updated.heures = d.heures==='' ? null : Number(d.heures);
+      const list = (t.completions||[]).map(x=>x===c ? updated : x);
+      const latest = list.slice().sort((a,b)=>(b.date||'').localeCompare(a.date||''))[0];
+      const upd = {completions:list, lastDate:latest.date};
+      if(latest===updated && d.date!==c.date && Number(t.cycleDays)>0) upd.nextDate = addDays(d.date, Number(t.cycleDays));
+      if(byHours && latest===updated && updated.heures!=null) upd.hoursAtLast = updated.heures;
+      updateDoc('tasks','tasks', t.id, upd);
+      logHistory('tasks', t.id, t.task, 'réalisation modifiée', t.vessel, 'du '+fmtDate(c.date)+(d.date!==c.date ? ' → '+fmtDate(d.date) : ''));
+      toast('Réalisation modifiée');
+    }});
+}
+
+/* ===================== NOTIFICATIONS =====================
+   Messages adressés à un niveau d'accès (ex. service technique contacté depuis une
+   fiche Défaut/NC), échéances à venir et délai d'apparition par type. */
+function notifyRole(role, title, text, ref, vessel){
+  return addDoc('notifications','notifications', {toRole:role, title, text:text||'', ref:ref||null, vessel:vessel||null, at:new Date().toISOString(), by:state.me.name||null, readBy:[]});
+}
+function notifReader(){ const p = currentProfile(); return p ? p.id : (state.me.name||'local'); }
+function myNotifications(){
+  const role = currentRole();
+  return state.notifications.filter(n=>n.toRole==='technique' ? ['admin','technique'].includes(role) : (!n.toRole || n.toRole===role)).sort((a,b)=>(b.at||'').localeCompare(a.at||''));
+}
+function unreadNotifications(){ const me = notifReader(); return myNotifications().filter(n=>!(n.readBy||[]).includes(me)); }
+function markNotificationRead(n){ const me = notifReader(); if(!(n.readBy||[]).includes(me)) updateDoc('notifications','notifications', n.id, {readBy:[...(n.readBy||[]), me]}); }
+const NOTIF_EXTRA_TYPES = [['crewCerts','Certificats marins'], ['documents','Révisions de documents'], ['equipage','Embarquements']];
+function notifDelays(){ try{ return JSON.parse(prefStore.getItem('sw_notif_delays')||'{}')||{}; }catch(e){ return {}; } }
+function notifDelay(type, fallback){ const n = Number(notifDelays()[type]); return n>0 ? n : fallback; }
+function viewNotifications(slot){
+  slot.innerHTML = '';
+  const msgs = myNotifications(), me = notifReader();
+  const card = el('div',{class:'card settings-card', 'data-fk':'notif-messages'}, el('h3',{}, 'Messages'));
+  if(!msgs.length) card.appendChild(el('div',{class:'hint'}, 'Aucun message.'));
+  msgs.slice(0, 50).forEach(n=>{
+    const unread = !(n.readBy||[]).includes(me);
+    card.appendChild(el('div',{class:'settings-row'+(unread ? ' notif-unread' : ''), 'data-fk':'notif-'+n.id},
+      el('div',{}, el('div',{class:'lbl'}, n.title), el('div',{class:'desc'}, [n.at ? fmtDateTime(n.at) : '', n.by, n.text].filter(Boolean).join(' · '))),
+      el('div',{style:'display:flex;gap:6px;'},
+        n.ref && n.ref.kind==='nc' && state.nonconformities.some(x=>x.id===n.ref.id) ? el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>{ markNotificationRead(n); openNcModal(state.nonconformities.find(x=>x.id===n.ref.id)); }}, 'Ouvrir') : null,
+        unread ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'notif-lu-'+n.id, onclick:()=>{ markNotificationRead(n); renderContent(); }}, 'Marquer comme lu') : null)));
+  });
+  slot.appendChild(card);
+  const items = reminderItems();
+  slot.appendChild(el('div',{class:'card settings-card'}, el('h3',{}, 'Échéances'),
+    !items.length ? el('div',{class:'hint'}, 'Rien à signaler.') : el('div',{class:'remind-list'}, ...items.slice(0, 40).map(i=>el('button',{type:'button', class:'remind-row remind-'+i.when, onclick:i.open},
+      el('span',{class:'remind-date'}, i.date ? fmtDate(i.date) : 'compteur'), el('span',{class:'remind-main'}, el('span',{class:'remind-label'}, i.label), el('span',{class:'hint', style:'margin:0;'}, [i.vessel ? vesselName(i.vessel) : '', i.sub].filter(Boolean).join(' · ')))))) ));
+  const d = notifDelays();
+  const types = [...CAL_TYPE_DEFS.filter(t=>['periodique','exercices','jobs','vesselCerts','arrets','levage','ism'].includes(t.key)).map(t=>[t.key, t.label]), ...NOTIF_EXTRA_TYPES];
+  slot.appendChild(el('div',{class:'card settings-card', 'data-fk':'notif-delais'}, el('h3',{}, 'Délai d’apparition des notifications'),
+    el('p',{class:'section-sub'}, 'Combien de jours avant l’échéance chaque type apparaît. Réglage de cet appareil.'),
+    ...types.map(([k,l])=>{
+      const s = el('select',{class:'select', 'aria-label':'Délai : '+l, 'data-fk':'delai-'+k, onchange:e=>{ const o = notifDelays(); if(e.target.value) o[k] = Number(e.target.value); else delete o[k]; prefStore.setItem('sw_notif_delays', JSON.stringify(o)); renderContent(); }},
+        el('option',{value:''}, 'Par défaut ('+remindDays()+' j)'), ...[3,7,14,30,60,90,180].map(n=>el('option',{value:String(n)}, n+' jours avant')));
+      s.value = d[k] ? String(d[k]) : '';
+      return el('div',{class:'settings-row'}, el('div',{class:'lbl'}, l), s);
+    })));
+}
+
+/* ===================== CERTIFICATS ET FEUILLES DE NOTES DES MARINS =====================
+   Collection crewDocs : kind « certificat » ou « note », par marin. Le marin voit les
+   siens ; certificats : aussi capitaine, service technique (DRH), administrateur ;
+   feuilles de notes : aussi capitaine et administrateur. Contrôle d'interface : le
+   fichier de données partagé contient tout. */
+const CREW_CERT_TYPES = ['Navigation','Sécurité','Grue / levage','Autre'];
+function myCrewId(){ const p = currentProfile(); return (p && p.crewId) || ''; }
+function canSeeCrewDocs(crewId, kind){ return crewId===myCrewId() || (kind==='note' ? ['admin','capitaine'] : ['admin','technique','capitaine']).includes(currentRole()); }
+function canEditCrewDocs(crewId, kind){ return uiWritable() && canSeeCrewDocs(crewId, kind); }
+function viewCrewDocs(slot){
+  slot.innerHTML = '';
+  const f = state._cd = state._cd || {tab:'certificat', crew:''};
+  const seeAll = ['admin','technique','capitaine'].includes(currentRole()), mine = myCrewId();
+  if(!seeAll) f.crew = mine;
+  const crew = state.crew.slice().sort((a,b)=>crewFullName(a).localeCompare(crewFullName(b),'fr'));
+  const noteAllowed = ['admin','capitaine'].includes(currentRole()) || !!mine;
+  if(!noteAllowed || (f.tab==='note' && f.crew && !canSeeCrewDocs(f.crew, 'note'))) f.tab = 'certificat';
+  const tabs = el('div',{class:'segmented', role:'group', 'aria-label':'Type de document'},
+    ...[['certificat', seeAll ? 'Certificats' : 'Mes certificats'], ['note', 'Feuilles de notes']].filter(([k])=>k!=='note' || noteAllowed).map(([k,l])=>el('button',{type:'button', class:'seg'+(f.tab===k ? ' active' : ''), 'aria-pressed':String(f.tab===k), 'data-fk':'cd-'+k, onclick:()=>{ f.tab = k; renderContent(); }}, l)));
+  const crewSel = seeAll ? el('select',{class:'select', 'aria-label':'Marin', 'data-fk':'cd-marin', onchange:e=>{ f.crew = e.target.value; renderContent(); }}, el('option',{value:''}, 'Tous les marins'), ...crew.map(m=>el('option',{value:m.id}, crewFullName(m)))) : null;
+  if(crewSel) crewSel.value = f.crew;
+  const target = f.crew || (crew.length===1 ? crew[0].id : '');
+  slot.appendChild(el('div',{class:'toolbar'}, tabs, crewSel, el('div',{style:'flex:1;'}),
+    (f.crew ? canEditCrewDocs(f.crew, f.tab) : seeAll && uiWritable()) ? el('button',{class:'btn btn-accent', type:'button', 'data-fk':'cd-ajouter', onclick:()=>openCrewDocModal(null, {crewId:target, kind:f.tab})}, el('span',{html:iconPlus()}), f.tab==='note' ? 'Importer une feuille de notes' : 'Ajouter un certificat') : null));
+  if(!seeAll && !mine){ slot.appendChild(el('div',{class:'card empty'}, el('h3',{}, 'Profil non relié'), 'Demandez à un administrateur de relier votre profil à votre fiche marin (Équipage).')); return; }
+  const rows = state.crewDocs.filter(d=>d.kind===f.tab && (!f.crew || d.crewId===f.crew) && canSeeCrewDocs(d.crewId, f.tab))
+    .sort((a,b)=>f.tab==='note' ? (b.date||'').localeCompare(a.date||'') : (a.dateExpiration||'9999').localeCompare(b.dateExpiration||'9999'));
+  if(!rows.length){ slot.appendChild(el('div',{class:'card empty'}, el('h3',{}, 'Aucun document'), f.tab==='note' ? 'Importez ici les feuilles de notes.' : 'Ajoutez les certificats : leur échéance apparaît dans les notifications.')); return; }
+  const tb = el('tbody',{});
+  rows.forEach(d=>tb.appendChild(el('tr',{class:'row-click', tabindex:'0', 'data-fk':'cd-'+d.id, onclick:e=>{ if(e.target.closest('.row-actions')) return; openCrewDocModal(d); }},
+    seeAll ? el('td',{style:'font-weight:600;'}, crewFullName(crewMember(d.crewId))) : null,
+    f.tab==='note' ? el('td',{}, fmtDate(d.date)) : el('td',{}, d.type||'—'),
+    el('td',{}, d.nom||'—', d.numero ? el('div',{class:'hint', style:'margin:2px 0 0;'}, 'N° '+d.numero) : null),
+    f.tab==='note' ? null : el('td',{}, fmtDate(d.dateExpiration)),
+    f.tab==='note' ? null : el('td',{html:certStatusBadge(d)}),
+    el('td',{class:'row-actions'}, filesButton(d.attachments, d.nom||'document')))));
+  slot.appendChild(el('div',{class:'card', style:'padding:16px 18px;'}, el('div',{class:'table-wrap'}, el('table',{},
+    el('thead',{}, el('tr',{}, ...[seeAll ? 'Marin' : null, f.tab==='note' ? 'Date' : 'Type', f.tab==='note' ? 'Titre' : 'Certificat', ...(f.tab==='note' ? [] : ['Expire le','Statut']), 'Fichier'].filter(Boolean).map(h=>el('th',{}, h)))), tb))));
+}
+function openCrewDocModal(d, prefill){
+  const isEdit = !!d, base = d || prefill || {}, kind = base.kind || 'certificat';
+  const attachEl = attachmentsEditor(base.attachments, {label: kind==='note' ? 'Feuille de notes (fichier ou photo)' : 'Scan ou photo du certificat'});
+  const seeAll = ['admin','technique','capitaine'].includes(currentRole());
+  const body = el('div',{},
+    seeAll ? field('Marin','crewId','select', [{v:'',l:'—'}, ...state.crew.map(m=>({v:m.id, l:crewFullName(m)}))], base.crewId||'') : null,
+    kind==='note' ? fieldRow(field('Titre','nom','text', null, base.nom||''), field('Date','date','date', null, base.date||todayISO())) : el('div',{},
+      fieldRow(field('Type','type','select', CREW_CERT_TYPES.map(t=>({v:t,l:t})), base.type||CREW_CERT_TYPES[0]), field('Intitulé','nom','text', null, base.nom||'', 'ex. Brevet de capitaine, CFBS')),
+      fieldRow(field('Numéro','numero','text', null, base.numero||''), field('Organisme','organisme','text', null, base.organisme||'')),
+      fieldRow(field('Émis le','dateEmission','date', null, base.dateEmission||''), field('Expire le','dateExpiration','date', null, base.dateExpiration||''))),
+    field('Notes','notes','textarea', null, base.notes||''), attachEl);
+  openModal({title: (isEdit ? '' : 'Nouveau : ')+(kind==='note' ? 'feuille de notes' : 'certificat')+(base.crewId ? ' — '+crewFullName(crewMember(base.crewId)) : ''), body,
+    readOnly: isEdit ? !canEditCrewDocs(d.crewId, kind) : !uiWritable(),
+    validate: x=>{ const c = x.crewId ?? base.crewId; return !c ? 'Choisissez le marin.' : !canEditCrewDocs(c, kind) ? 'Vous ne pouvez pas modifier les documents de ce marin.' : requireField(x,'nom','L’intitulé'); },
+    onDelete: isEdit && canEditCrewDocs(d.crewId, kind) ? async ()=>{ deleteDoc('crewDocs','crewDocs', d.id); logHistory('crewDocs', d.id, d.nom, 'supprimé', null); toast('Document supprimé'); } : null,
+    onSubmit: async x=>{
+      const data = {...x, kind, crewId:x.crewId ?? base.crewId, nom:x.nom.trim(), attachments:attachEl._getList()};
+      if(isEdit){ updateDoc('crewDocs','crewDocs', d.id, data); logHistory('crewDocs', d.id, data.nom, 'modifié', null); }
+      else{ const id = addDoc('crewDocs','crewDocs', data); logHistory('crewDocs', id, data.nom, 'créé', null, crewFullName(crewMember(data.crewId))); }
+      toast('Document enregistré');
+    }});
+}
+
+/* ===================== ARRÊTS TECHNIQUES : DÉTAIL DES TRAVAUX ET FACTURES ===================== */
+const WORK_STATUSES = ['À faire','En cours','Fait'];
+const INVOICE_STATUSES = ['À recevoir','Reçue','Validée','Payée'];
+function peopleOptions(){ return [...new Set([...state.users.map(profileFullName), ...state.crew.map(crewFullName)])].sort((a,b)=>a.localeCompare(b,'fr')).map(n=>({v:n,l:n})); }
+function openWorkDetailModal(w, done){
+  const docsEl = attachmentsEditor(w.attachments, {label:'Documents et photos du travail'});
+  const closeEl = attachmentsEditor(w.photosCloture, {label:'Photos de clôture'});
+  const body = el('div',{},
+    field('Description','description','textarea', null, w.description||''),
+    fieldRow(field('Responsable','responsable','select', [{v:'',l:'—'}, ...peopleOptions(), ...(w.responsable && !peopleOptions().some(o=>o.v===w.responsable) ? [{v:w.responsable,l:w.responsable}] : [])], w.responsable||''),
+      field('État','statut','select', WORK_STATUSES.map(s=>({v:s,l:s})), w.statut||'À faire')),
+    fieldRow(field('Clôturé par','cloturePar','text', null, w.cloturePar||''), field('Clôturé le','dateCloture','date', null, w.dateCloture||'')),
+    field('Notes','notes','textarea', null, w.notes||''), docsEl, closeEl);
+  openModal({title:'Travail — '+(w.libelle||''), body, wide:true, readOnly:!canEdit(), submitLabel:'Valider',
+    onSubmit: async d=>{
+      Object.assign(w, d, {attachments:docsEl._getList(), photosCloture:closeEl._getList()});
+      if(w.statut==='Fait'){ w.cloturePar = w.cloturePar || state.me.name || ''; w.dateCloture = w.dateCloture || todayISO(); }
+      done();
+    }});
+}
+function openInvoiceModal(fac, works, onSave, onRemove){
+  const base = fac || {};
+  const picked = new Set(base.travauxIds||[]);
+  const attachEl = attachmentsEditor(base.attachments, {label:'Facture (PDF, photo)'});
+  const provs = [...new Set(works.map(w=>w.prestataire).filter(Boolean))];
+  const body = el('div',{},
+    fieldRow(field('Prestataire','prestataire','text', null, base.prestataire||provs[0]||''), field('N° de facture','numero','text', null, base.numero||'')),
+    fieldRow(field('Date','date','date', null, base.date||''), field('Montant (€)','montant','number', null, base.montant ?? '')),
+    field('État','statut','select', INVOICE_STATUSES.map(s=>({v:s,l:s})), base.statut||'À recevoir'),
+    el('div',{class:'field'}, el('div',{class:'field-label'}, 'Travaux concernés (une facture peut couvrir plusieurs travaux, et un travail avoir plusieurs factures)'),
+      ...works.map(w=>el('label',{class:'check', style:'display:flex;'}, el('input',{type:'checkbox', 'data-fk':'fac-w-'+w.id, checked:picked.has(w.id) ? '' : null, onchange:e=>{ if(e.target.checked) picked.add(w.id); else picked.delete(w.id); }}), (w.libelle||'—')+(w.prestataire ? ' — '+w.prestataire : '')))),
+    attachEl);
+  openModal({title:fac ? 'Facture '+(fac.numero||'') : 'Nouvelle facture', body, wide:true, readOnly:!canEdit(), submitLabel:'Valider',
+    onDelete: fac && onRemove ? async ()=>onRemove() : null, deleteMessage:'Retirer cette facture ?',
+    validate: d=>d.prestataire.trim() ? (d.montant!=='' && !(Number(d.montant)>=0) ? 'Montant invalide.' : null) : 'Le prestataire est obligatoire.',
+    onSubmit: async d=>onSave({id:base.id||uid(), ...d, prestataire:d.prestataire.trim(), montant:d.montant==='' ? '' : Number(d.montant), travauxIds:[...picked], attachments:attachEl._getList()})});
+}
+/* demande de facture à un prestataire : travaux sans facture, message prêt à envoyer */
+function requestInvoiceMail(prest, works, dockTitre){
+  openMail([], 'Demande de facture — '+dockTitre, 'Bonjour,\n\nMerci de nous transmettre votre facture pour les travaux suivants :\n'+works.map(w=>'- '+w.libelle+(w.cout!=='' && w.cout!=null ? ' ('+w.cout+' €)' : '')).join('\n')+'\n\nCordialement,\n'+(state.me.name||''));
+}
+
+/* ===================== RELEVÉS DE CAISSES =====================
+   Fiche fuel de type « Relevé caisses » : niveaux {caisse: litres} à une date. Les caisses
+   communiquent : le suivi se fait sur le total gasoil et le total huile (bidon de réserve compris).
+   Consommation entre deux relevés = total précédent + entrées − total du relevé. */
+const FUEL_LEVELS = 'Relevé caisses';
+const GO_TANKS = ['go-bd','go-td'], OIL_TANKS = ['hu-bd','hu-td','hu-aux','res-bidon'];
+function tankReadings(v){ return state.fuel.filter(r=>r.vessel===v && r.type===FUEL_LEVELS && r.niveaux).sort((a,b)=>(a.date+(a.createdAt||'')).localeCompare(b.date+(b.createdAt||''))); }
+const levelSum = (niv, keys)=>keys.reduce((s,k)=>s+(Number(niv[k])||0), 0);
+function fuelIn(v, type, after, upto, caisse){ return fuelEntries().filter(e=>e.vessel===v && e.type===type && e.date>after && e.date<=upto && isLitres(e) && (!caisse || e.caisse===caisse)).reduce((s,e)=>s+e.quantite, 0); }
+function tankRows(v){
+  const list = tankReadings(v);
+  return list.map((r,i)=>{
+    const p = list[i-1], go = levelSum(r.niveaux, GO_TANKS), oil = levelSum(r.niveaux, OIL_TANKS);
+    return {r, go, oil, goConso: p ? levelSum(p.niveaux, GO_TANKS)+fuelIn(v,'Gazole',p.date,r.date)-go : null, oilConso: p ? levelSum(p.niveaux, OIL_TANKS)+fuelIn(v,'Huile moteur',p.date,r.date)-oil : null};
+  });
+}
+function tankLevelsCard(v){
+  const rows = tankRows(v), last = rows[rows.length-1];
+  const today = todayISO();
+  const inSince = t=>last ? fuelIn(v, tankDef(t.k).type, last.r.date, today, t.k) : 0;
+  const n = x=>x==null ? '—' : fmtNum(x);
+  const card = el('div',{class:'card', style:'padding:16px 18px;margin-bottom:14px;', 'data-fk':'caisses'},
+    el('div',{class:'section-head', style:'margin-bottom:6px;'}, el('h2',{style:'font-size:15.5px;margin:0;'}, 'Caisses et réserve'),
+      canInput() ? el('button',{class:'btn btn-primary btn-sm', type:'button', 'data-fk':'releve-caisses', onclick:()=>openTankLevelModal(v)}, el('span',{html:iconPlus()}), 'Relevé des caisses') : null),
+    el('div',{class:'section-sub', style:'margin-bottom:8px;'}, last ? 'Dernier relevé le '+fmtDate(last.r.date)+'. Les caisses communiquent : la consommation se lit sur les totaux.' : 'Aucun relevé : saisissez le niveau de chaque caisse pour suivre la consommation.'));
+  const estTotal = keys=>keys.reduce((s,k)=>s+(last ? (Number(last.r.niveaux[k])||0)+inSince({k}) : 0), 0);
+  card.appendChild(el('div',{class:'table-wrap'}, el('table',{class:'compact-table num-table'},
+    el('thead',{}, el('tr',{}, ...['Caisse','Dernier relevé (L)','Soutages depuis (L)','Estimé (L)'].map(h=>el('th',{}, h)))),
+    el('tbody',{}, ...FUEL_TANKS.map(t=>el('tr',{}, el('td',{style:'font-weight:600;'}, t.l), el('td',{}, last ? n(last.r.niveaux[t.k]) : '—'), el('td',{}, last ? n(inSince(t)) : '—'), el('td',{}, last ? n((Number(last.r.niveaux[t.k])||0)+inSince(t)) : '—')))),
+    el('tfoot',{}, el('tr',{}, el('th',{}, 'Total gasoil'), el('th',{}, last ? n(last.go) : '—'), el('th',{}), el('th',{}, last ? n(estTotal(GO_TANKS)) : '—')),
+      el('tr',{}, el('th',{}, 'Total huile (réserve comprise)'), el('th',{}, last ? n(last.oil) : '—'), el('th',{}), el('th',{}, last ? n(estTotal(OIL_TANKS)) : '—'))))));
+  if(rows.length) card.appendChild(el('details',{style:'margin-top:10px;'}, el('summary',{}, 'Historique des relevés ('+rows.length+')'),
+    el('div',{class:'table-wrap'}, el('table',{class:'compact-table num-table', 'data-fk':'releves-caisses'},
+      el('thead',{}, el('tr',{}, ...['Date', ...FUEL_TANKS.map(t=>t.l), 'Total gasoil','Conso gasoil','Total huile','Conso huile','Compteurs'].map(h=>el('th',{}, h)))),
+      el('tbody',{}, ...rows.slice().reverse().map(x=>el('tr',{class:'row-click', 'data-fk':'releve-'+x.r.id, onclick:()=>openTankLevelModal(v, x.r)}, el('td',{style:'white-space:nowrap;'}, fmtDate(x.r.date)), ...FUEL_TANKS.map(t=>el('td',{}, n(x.r.niveaux[t.k]))),
+        el('td',{style:'font-weight:700;'}, n(x.go)), el('td',{}, n(x.goConso)), el('td',{style:'font-weight:700;'}, n(x.oil)), el('td',{}, n(x.oilConso)),
+        el('td',{}, METERS.filter(m=>x.r.compteurs && x.r.compteurs[m.key]!=null).map(m=>m.label+' '+fmtHours(x.r.compteurs[m.key])).join(' · ')||'—'))))))));
+  return card;
+}
+function openTankLevelModal(v, r){
+  const isEdit = !!r, prev = tankReadings(v).filter(x=>x!==r).pop();
+  const from = r ? r.niveaux : (prev ? prev.niveaux : {});
+  const body = el('div',{},
+    field('Date du relevé','date','date', null, r ? r.date : todayISO()),
+    el('div',{class:'field-row'}, ...FUEL_TANKS.map(t=>field(t.l+' (L)','n-'+t.k,'number', null, from[t.k] ?? ''))),
+    el('div',{class:'field-label', style:'margin-top:6px;'}, 'Compteurs horaires (facultatif)'),
+    el('div',{class:'field-row'}, ...METERS.map(m=>field(m.label+' (h)','c-'+m.key,'number', null, r && r.compteurs ? r.compteurs[m.key] ?? '' : ''))),
+    field('Notes','notes','text', null, r ? r.notes||'' : ''));
+  openModal({title:'Relevé des caisses — '+vesselName(v), body, wide:true, readOnly: r ? !canEdit() : !canInput(),
+    validate: d=>!d.date ? 'La date est obligatoire.' : FUEL_TANKS.some(t=>d['n-'+t.k]==='' || !(Number(d['n-'+t.k])>=0)) ? 'Indiquez le niveau de chaque caisse et de la réserve.' : null,
+    onDelete: isEdit ? async ()=>{ deleteDoc('fuel','fuel', r.id); logHistory('fuel', r.id, FUEL_LEVELS, 'supprimé', v); toast('Relevé supprimé'); } : null,
+    onSubmit: async d=>{
+      const niveaux = {}, compteurs = {};
+      FUEL_TANKS.forEach(t=>{ niveaux[t.k] = Number(d['n-'+t.k]); });
+      METERS.forEach(m=>{ if(d['c-'+m.key]!==''){ compteurs[m.key] = Number(d['c-'+m.key]); updateVesselMeterIfHigher(v, compteurs[m.key], 'relevé des caisses', m.key, d.date); } });
+      const data = {vessel:v, date:d.date, type:FUEL_LEVELS, niveaux, compteurs, notes:d.notes};
+      if(isEdit){ updateDoc('fuel','fuel', r.id, data); logHistory('fuel', r.id, FUEL_LEVELS+' du '+fmtDate(d.date), 'modifié', v); }
+      else{ const id = addDoc('fuel','fuel', data); logHistory('fuel', id, FUEL_LEVELS+' du '+fmtDate(d.date), 'ajouté', v, 'gasoil '+fmtNum(levelSum(niveaux, GO_TANKS))+' L · huile '+fmtNum(levelSum(niveaux, OIL_TANKS))+' L'); }
+      toast('Relevé enregistré', 'success');
+    }});
+}
+/* types de documents ajoutés par l'administrateur (réglage partagé docTypes) */
+function docTypes(){ const s = setting('docTypes'); return [...DOC_TYPES, ...(s && Array.isArray(s.items) ? s.items.filter(x=>!DOC_TYPES.includes(x)) : [])]; }
+function openDocTypesModal(){
+  const items = [...((setting('docTypes')||{}).items||[])];
+  const box = el('div',{});
+  const used = t=>state.documents.filter(d=>d.type===t).length;
+  const draw = ()=>{ box.innerHTML = ''; items.forEach((t,i)=>box.appendChild(el('div',{class:'settings-row'}, el('div',{class:'lbl'}, t+' ('+used(t)+')'),
+    el('button',{class:'btn-danger-text', type:'button', disabled:used(t) ? '' : null, onclick:()=>{ items.splice(i,1); draw(); }}, 'Retirer')))); };
+  draw();
+  const input = el('input',{type:'text', class:'select', 'aria-label':'Nouveau type', 'data-fk':'nouveau-type-doc', placeholder:'ex. Rapport de classe'});
+  openModal({title:'Types de documents', readOnly:!canManageProfiles(), body:el('div',{}, el('div',{class:'hint', style:'margin:0 0 8px;'}, 'Types de base : '+DOC_TYPES.join(', ')+'.'), box,
+    el('div',{class:'settings-row'}, input, el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'ajouter-type-doc', onclick:()=>{ const v = input.value.trim(); if(!v || docTypes().concat(items).includes(v)) return; items.push(v); input.value=''; draw(); }}, 'Ajouter'))),
+    onSubmit: async ()=>{ saveSetting('docTypes', {items}); logHistory('settings', 'docTypes', 'Types de documents', 'modifié', null, items.join(', ')||'—'); toast('Types enregistrés'); }});
 }
 
 /* ===================== CARTE DES NAVIRES =====================
@@ -8257,13 +8749,14 @@ function viewDocumentation(slot){
     ...VESSELS.map(v=>el('option',{value:v.key}, v.name)));
   scopeSel.value = state._docVessel || '';
   const typeSel = el('select',{class:'select', 'aria-label':'Filtrer par type', 'data-fk':'filtre-type', onchange:e=>{ state._docType = e.target.value; renderContent(); }},
-    el('option',{value:''},'Tous types'), ...DOC_TYPES.map(t=>el('option',{value:t}, t)));
+    el('option',{value:''},'Tous types'), ...docTypes().map(t=>el('option',{value:t}, t)));
   typeSel.value = state._docType || '';
   const vesselForEq = VESSELS.some(v=>v.key===state._docVessel) ? state._docVessel : null;
   const search = el('div',{class:'search-box'}, el('span',{html:iconSearch()}),
     el('input',{type:'search', 'aria-label':'Rechercher un document…', 'data-fk':'recherche', placeholder:'Rechercher (titre, référence, élément)…', value:state._docSearch||'',
       oninput:e=>{ state._docSearch = e.target.value.toLowerCase(); renderContent(); }}));
   slot.appendChild(el('div',{class:'toolbar'}, search, scopeSel, typeSel, vesselForEq ? equipmentFilter(vesselForEq, '_docEq') : null,
+    canManageProfiles() ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'doc-types', onclick:openDocTypesModal}, 'Types…') : null,
     addButtonIfAllowed('Ajouter un document', ()=>openDocumentModal(null, {vessel: vesselForEq || ''}))));
 
   let rows = state.documents.filter(d=>inVesselScope(d.vessel));
@@ -8271,7 +8764,7 @@ function viewDocumentation(slot){
   else if(state._docVessel) rows = rows.filter(d=>d.vessel===state._docVessel || !d.vessel);
   if(state._docType) rows = rows.filter(d=>d.type===state._docType);
   if(vesselForEq) rows = rows.filter(d=>matchesEquipment(d, state._docEq));
-  if(state._docSearch) rows = rows.filter(d=>[d.titre, d.reference, d.type, equipmentName(d.equipmentId), d.notes].join(' ').toLowerCase().includes(state._docSearch));
+  if(state._docSearch) rows = rows.filter(d=>[d.titre, d.reference, d.type, equipLabel(d), d.notes].join(' ').toLowerCase().includes(state._docSearch));
   rows.sort((a,b)=>(a.titre||'').localeCompare(b.titre||'', 'fr'));
 
   if(!rows.length){
@@ -8288,7 +8781,7 @@ function viewDocumentation(slot){
         (d.reference || d.version) ? el('div',{style:'font-size:12px;color:var(--text-soft);margin-top:2px;'}, [d.reference ? 'Réf. '+d.reference : '', d.version ? 'version '+d.version : ''].filter(Boolean).join(' · ')) : null),
       el('td',{html:`<span class="cat-tag">${esc(d.type||'Autre')}</span>`}),
       el('td',{}, docScopeLabel(d)),
-      el('td',{}, equipmentName(d.equipmentId) ? el('span',{class:'link-tag'}, equipmentName(d.equipmentId)) : '—'),
+      el('td',{}, equipLabel(d) ? el('span',{class:'link-tag'}, equipLabel(d)) : '—'),
       el('td',{}, fmtDate(d.dateDoc)),
       el('td',{class:'row-actions', style:'text-align:right;white-space:nowrap;'},
         files.length ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'aria-label':'Ouvrir '+d.titre, disabled: canDisplayAttachment(files[0]) ? null : '',
@@ -8311,7 +8804,7 @@ function openDocumentModal(d, prefill){
   const body = el('div',{},
     field('Titre','titre','text', null, base.titre||'', 'ex. Manuel d’entretien moteur Cummins KTA19'),
     fieldRow(
-      field('Type','type','select', DOC_TYPES.map(t=>({v:t,l:t})), base.type||DOC_TYPES[0]),
+      field('Type','type','select', [...docTypes(), ...(base.type && !docTypes().includes(base.type) ? [base.type] : [])].map(t=>({v:t,l:t})), base.type||DOC_TYPES[0]),
       field('Navire','vessel','select', [{v:'',l:'Toute la flotte'}, ...VESSELS.map(v=>({v:v.key,l:v.name}))], vessel)
     ),
     field('Élément du navire','equipmentId','select', eqOptions, base.equipmentId||'', 'le document sera proposé dans les jobs de cet élément'),
@@ -8319,7 +8812,7 @@ function openDocumentModal(d, prefill){
       field('Référence','reference','text', null, base.reference||''),
       field('Version / révision','version','text', null, base.version||'')
     ),
-    field('Date du document','dateDoc','date', null, base.dateDoc||''),
+    fieldRow(field('Date du document','dateDoc','date', null, base.dateDoc||''), field('Révision à faire le','dateRevision','date', null, base.dateRevision||'', 'crée une notification à l’approche de cette date')),
     field('Notes','notes','textarea', null, base.notes||''),
     attachEl,
     isEdit ? recordHistorySection(d) : null
@@ -8498,7 +8991,7 @@ function buildReport(o, range){
   }
   if(S.realises) section('Jobs récurrents réalisés', table([
     ['Date', x=>fmtDate(x.c.date)], ...(multi ? [['Navire', x=>vesselName(x.t.vessel)]] : []), ['Job', x=>x.t.task], ['Catégorie', x=>x.t.category],
-    ['Élément', x=>equipmentName(x.t.equipmentId)||'—'], ['Par', x=>x.c.by||'—'],
+    ['Élément', x=>equipLabel(x.t)||'—'], ['Par', x=>x.c.by||'—'],
     ['Compteur', x=>x.c.heures!=null ? meterLabel(x.t.meter)+' '+fmtHours(x.c.heures) : '—'], ['Commentaire', x=>x.c.commentaire||'—']], regular));
   if(S.drills) section('Exercices & drills réalisés', table([
     ['Date', x=>fmtDate(x.c.date)], ...(multi ? [['Navire', x=>vesselName(x.t.vessel)]] : []), ['Exercice', x=>x.t.task], ['Par', x=>x.c.by||'—'],
@@ -8508,10 +9001,10 @@ function buildReport(o, range){
     const box = el('div',{});
     box.appendChild(el('h3',{}, 'Terminés sur la période ('+pDone.length+')'));
     box.appendChild(table([['Réalisé le', j=>fmtDate(j.dateRealisation)], ...vcol, ['Job', j=>j.titre], ['Nature', j=>j.nature||'Réparation de défaut'],
-      ['Élément', j=>equipmentName(j.equipmentId)||'—'], ['Assigné à', j=>j.assigneA||'—']], pDone, 'Aucun job ponctuel terminé sur la période.'));
+      ['Élément', j=>equipLabel(j)||'—'], ['Assigné à', j=>j.assigneA||'—']], pDone, 'Aucun job ponctuel terminé sur la période.'));
     box.appendChild(el('h3',{}, 'Encore ouverts à ce jour ('+pOpen.length+')'+(pCreated.length ? ' — dont '+pCreated.filter(j=>j.statut!=='Terminé').length+' créés sur la période' : '')));
     box.appendChild(table([['Échéance', j=>fmtDate(j.dateEcheance)], ...vcol, ['Job', j=>j.titre], ['Nature', j=>j.nature||'Réparation de défaut'],
-      ['Priorité', j=>j.priorite||'Normale'], ['Statut', j=>j.statut||'À faire'], ['Élément', j=>equipmentName(j.equipmentId)||'—']],
+      ['Priorité', j=>j.priorite||'Normale'], ['Statut', j=>j.statut||'À faire'], ['Élément', j=>equipLabel(j)||'—']],
       pOpen.slice().sort((a,b)=>(a.dateEcheance||'9999').localeCompare(b.dateEcheance||'9999')), 'Aucun job ponctuel ouvert.'));
     section('Jobs ponctuels', box);
   }
@@ -8520,7 +9013,7 @@ function buildReport(o, range){
     const rows = state.tasks.filter(t=>vessels.includes(t.vessel) && (taskStatus(t)==='retard' || taskStatus(t)==='proche' || (t.unit!=='heures' && t.nextDate && t.nextDate<=limit)))
       .sort((a,b)=>({retard:0,proche:1}[taskStatus(a)]??2)-({retard:0,proche:1}[taskStatus(b)]??2) || (a.nextDate||'').localeCompare(b.nextDate||''));
     section('Retards et échéances à venir', table([['Statut', t=>STATUS_LABEL[taskStatus(t)]], ...vcol, ['Job', t=>t.task], ['Catégorie', t=>t.category],
-      ['Échéance', t=>taskDueText(t)], ['Élément', t=>equipmentName(t.equipmentId)||'—']], rows, 'Aucun job en retard ni dû dans les 30 jours.'),
+      ['Échéance', t=>taskDueText(t)], ['Élément', t=>equipLabel(t)||'—']], rows, 'Aucun job en retard ni dû dans les 30 jours.'),
       'Situation au '+fmtDate(todayISO())+' : jobs en retard, bientôt dus, ou dus dans les 30 jours.');
   }
   if(S.compteurs){
@@ -8533,7 +9026,7 @@ function buildReport(o, range){
     section('Compteurs', table([...vcol, ['Compteur', r=>r.m.label+' — '+r.m.long], ['Heures sur la période', r=>fmtHours(r.hours)], ['Relevés', r=>r.n],
       ['Valeur actuelle', r=>fmtHours(r.current)], ['Remises à zéro', r=>r.resets||'—']], rows));
   }
-  if(S.conso) section('Consommations', table([['Navire', x=>vesselName(x.v)], ['Heures (MP Bd + MP Td + DG)', x=>fmtHours(x.c.totalHours)], ['Gazole reçu', x=>fmtNum(x.c.gazole)+' L'],
+  if(S.conso) section('Consommations', table([['Navire', x=>vesselName(x.v)], ['Heures (MP Bd + MP Td + GE)', x=>fmtHours(x.c.totalHours)], ['Gazole reçu', x=>fmtNum(x.c.gazole)+' L'],
     ['Consommation spécifique', x=>x.c.rate!=null ? fmtNum(x.c.rate,1)+' L/h' : '—'], ['Huile moteur', x=>fmtNum(x.c.oilTotal)+' L']], conso),
     'Gazole reçu ÷ heures de fonctionnement des trois compteurs ; non calculé en dessous de '+CONSO_MIN_HOURS+' h.');
   if(S.certificats){
@@ -8739,7 +9232,7 @@ function viewTableurs(slot){
   if(state._shVessel==='__flotte') rows = rows.filter(s=>!s.vessel);
   else if(state._shVessel) rows = rows.filter(s=>s.vessel===state._shVessel || !s.vessel);
   if(state._shProv) rows = rows.filter(s=>sheetProvider(s.url)===state._shProv);
-  if(state._shSearch) rows = rows.filter(s=>[s.titre, s.categorie, s.notes, equipmentName(s.equipmentId)].join(' ').toLowerCase().includes(state._shSearch));
+  if(state._shSearch) rows = rows.filter(s=>[s.titre, s.categorie, s.notes, equipLabel(s)].join(' ').toLowerCase().includes(state._shSearch));
   rows.sort((a,b)=>(a.categorie||'~').localeCompare(b.categorie||'~','fr') || (a.titre||'').localeCompare(b.titre||'','fr'));
 
   if(!rows.length){
@@ -8751,7 +9244,7 @@ function viewTableurs(slot){
   const grid = el('div',{class:'sheet-grid'});
   rows.forEach(s=>{
     const prov = sheetProvider(s.url);
-    const eqn = equipmentName(s.equipmentId);
+    const eqn = equipLabel(s);
     grid.appendChild(el('div',{class:'card sheet-card'},
       el('div',{class:'sheet-head'},
         el('span',{class:'sheet-prov sheet-prov-'+prov}, el('span',{html:iconTable(14)}), SHEET_PROVIDERS[prov].label),
@@ -8887,6 +9380,18 @@ function viewBord(slot){
   });
   slot.appendChild(bordSection('Relever un compteur', meters));
 
+  // défauts / jobs ponctuels ouverts
+  const open = state.jobs.filter(j=>j.vessel===v && j.statut!=='Terminé')
+    .sort((a,b)=>(a.priorite==='Urgente'?0:1)-(b.priorite==='Urgente'?0:1) || (a.dateEcheance||'9999').localeCompare(b.dateEcheance||'9999'));
+  const ol = el('div',{class:'bord-list'});
+  if(!open.length) ol.appendChild(el('div',{class:'bord-empty'}, 'Aucun job ponctuel ouvert.'));
+  open.forEach(j=>ol.appendChild(el('div',{class:'bord-row'},
+    el('button',{type:'button', class:'bord-row-main', onclick:()=>openJobModal(j)},
+      el('span',{class:'bord-row-title'}, j.priorite==='Urgente' ? el('span',{class:'priority-dot', title:'Urgent'}) : null, j.titre),
+      el('span',{class:'bord-row-sub'}, [j.nature||'Réparation de défaut', equipLabel(j), jobStatusLabel(j.statut)].filter(Boolean).join(' · '))),
+    canInput() ? el('button',{type:'button', class:'btn btn-ghost bord-done', 'aria-label':'Marquer « '+j.titre+' » comme fait', onclick:()=>quickCompleteJob(j).then(()=>renderContent())}, el('span',{html:iconCheck()}), 'Fait') : null)));
+  slot.appendChild(bordSection('Défauts et jobs ponctuels ouverts', ol, open.length ? String(open.length) : null));
+
   // jobs à faire maintenant
   const tasks = state.tasks.filter(t=>t.vessel===v);
   const order = {retard:0, proche:1, inconnu:2, ok:3};
@@ -8902,24 +9407,12 @@ function viewBord(slot){
   slot.appendChild(bordSection('Jobs à faire', jobList, due.length ? due.length+' à faire' : null));
 
   // exercices
-  const drills = tasks.filter(t=>t.category===DRILL_CATEGORY).sort((a,b)=>order[taskStatus(a)]-order[taskStatus(b)] || (a.nextDate||'').localeCompare(b.nextDate||''));
+  const drills = tasks.filter(t=>t.category===DRILL_CATEGORY && taskStatus(t)!=='ok').sort((a,b)=>order[taskStatus(a)]-order[taskStatus(b)] || (a.nextDate||'').localeCompare(b.nextDate||'')); // ceux qui sont faits et à jour ne s'affichent pas
   if(drills.length){
     const dl = el('div',{class:'bord-list'});
     drills.forEach(t=>dl.appendChild(bordTaskRow(t)));
     slot.appendChild(bordSection('Exercices & drills', dl));
   }
-
-  // défauts / jobs ponctuels ouverts
-  const open = state.jobs.filter(j=>j.vessel===v && j.statut!=='Terminé')
-    .sort((a,b)=>(a.priorite==='Urgente'?0:1)-(b.priorite==='Urgente'?0:1) || (a.dateEcheance||'9999').localeCompare(b.dateEcheance||'9999'));
-  const ol = el('div',{class:'bord-list'});
-  if(!open.length) ol.appendChild(el('div',{class:'bord-empty'}, 'Aucun job ponctuel ouvert.'));
-  open.forEach(j=>ol.appendChild(el('div',{class:'bord-row'},
-    el('button',{type:'button', class:'bord-row-main', onclick:()=>openJobModal(j)},
-      el('span',{class:'bord-row-title'}, j.priorite==='Urgente' ? el('span',{class:'priority-dot', title:'Urgent'}) : null, j.titre),
-      el('span',{class:'bord-row-sub'}, [j.nature||'Réparation de défaut', equipmentName(j.equipmentId), j.statut].filter(Boolean).join(' · '))),
-    canInput() ? el('button',{type:'button', class:'btn btn-ghost bord-done', 'aria-label':'Terminer « '+j.titre+' »', onclick:()=>quickCompleteJob(j).then(()=>renderContent())}, el('span',{html:iconCheck()}), 'Terminé') : null)));
-  slot.appendChild(bordSection('Défauts et jobs ponctuels ouverts', ol, open.length ? String(open.length) : null));
 
   // mes dernières saisies (contrôle)
   const mine = state.history.filter(h=>h.vessel===v && (!state.me.name || h.userId===state.me.name)).slice(0, 5);
@@ -8938,7 +9431,7 @@ function bordTaskRow(t){
   return el('div',{class:'bord-row'},
     el('button',{type:'button', class:'bord-row-main', onclick:()=>openTaskModal(t)},
       el('span',{class:'bord-row-title'}, t.task),
-      el('span',{class:'bord-row-sub', html: statusBadge(s)+' '+esc(taskDueText(t))+(equipmentName(t.equipmentId) ? ' · '+esc(equipmentName(t.equipmentId)) : '')})),
+      el('span',{class:'bord-row-sub', html: statusBadge(s)+' '+esc(taskDueText(t))+(equipLabel(t) ? ' · '+esc(equipLabel(t)) : '')})),
     canInput() ? el('button',{type:'button', class:'btn btn-primary bord-done', 'aria-label':'Marquer « '+t.task+' » comme fait', onclick:()=>openDoneModal(t)}, el('span',{html:iconCheck()}), 'Fait') : null);
 }
 /* signalement rapide d'un défaut → job ponctuel « Réparation de défaut » */
@@ -8946,10 +9439,10 @@ function openDefectModal(vessel){
   const attachEl = attachmentsEditor([], {label:'Photos du défaut'});
   const body = el('div',{},
     field('Défaut constaté','titre','text', null, '', 'ex. Fuite sur la vanne de cale bâbord'),
-    field('Élément du navire','equipmentId','select', equipmentOptionsFor(vessel), ''),
+    field('Catégorie ou élément','equipmentId','select', equipmentLinkOptions(vessel), ''),
     field('Priorité','priorite','select', JOB_PRIORITIES.map(p=>({v:p,l:p})), 'Normale'),
     field('Détails (optionnel)','description','textarea', null, ''),
-    field('Registre ISM','ism','select', [{v:'',l:'Non — simple réparation'},{v:'1',l:'Oui — ouvrir aussi une fiche de non-conformité'},{v:'2',l:'Oui, et prévenir le service technique par e-mail'}], '',
+    field('Contacter le service technique','ism','select', [{v:'',l:'Non — simple réparation'},{v:'1',l:'Ouvrir aussi une fiche de non-conformité'},{v:'2',l:'Ouvrir une fiche et prévenir le service technique (notification et e-mail)'}], '',
       'pour une non-conformité, une situation dangereuse ou un presqu’accident'),
     attachEl);
   openModal({
@@ -8958,14 +9451,15 @@ function openDefectModal(vessel){
     readOnly: !canInput(),
     validate: d=>requireField(d,'titre','La description du défaut'),
     onSubmit: async d=>{
+      applyEquipLink(d);
       const data = {vessel, titre:d.titre.trim(), nature:'Réparation de défaut', statut:'À faire', priorite:d.priorite,
-        equipmentId:d.equipmentId||null, description:d.description, assigneA:'', dateEcheance: d.priorite==='Urgente' ? todayISO() : '',
+        equipmentId:d.equipmentId, equipCat:d.equipCat, description:d.description, assigneA:'', dateEcheance: d.priorite==='Urgente' ? todayISO() : '',
         dateRealisation:'', attachments:attachEl._getList()};
       const id = addDoc('jobs','jobs', data);
       logHistory('jobs', id, data.titre, 'défaut signalé', vessel, (d.priorite==='Urgente' ? 'Urgent' : '')+(data.attachments.length ? (d.priorite==='Urgente'?' · ':'')+data.attachments.length+' photo(s)' : ''));
       if(d.ism){
         const nc = {vessel, numero:nextNcNumber(todayISO()), dateConstat:todayISO(), titre:data.titre, type:'Défaut technique', origine:'Constat à bord',
-          gravite: d.priorite==='Urgente' ? 'Majeure' : 'Mineure', constatePar:state.me.name||'', equipmentId:data.equipmentId, description:data.description,
+          gravite: d.priorite==='Urgente' ? 'Majeure' : 'Mineure', constatePar:state.me.name||'', equipmentId:data.equipmentId, equipCat:data.equipCat, description:data.description,
           causes:'', actionImmediate:'', actionCorrective:'', responsable:'', echeance:'', statut:'Action en cours', jobId:id,
           efficace:'', verifPar:'', verifDate:'', verifCommentaire:'', attachments:data.attachments.slice()};
         const ncId = addDoc('nonconformities','nonconformities', nc);
@@ -9017,7 +9511,7 @@ function ncMailText(n){
     'Fiche : '+(n.numero||'—')+' — '+(n.titre||''),
     'Type : '+(n.type||'—')+' · Gravité : '+(n.gravite||'—')+' · Statut : '+(n.statut||'—'),
     'Constaté le '+fmtDate(n.dateConstat)+(n.constatePar ? ' par '+n.constatePar : ''),
-    n.equipmentId ? 'Élément : '+equipmentName(n.equipmentId) : '',
+    n.equipmentId ? 'Élément : '+equipLabel(n) : '',
     n.description ? '\nDescription :\n'+n.description : '',
     n.actionImmediate ? '\nAction immédiate :\n'+n.actionImmediate : '',
     n.echeance ? '\nÉchéance de l’action corrective : '+fmtDate(n.echeance) : '',
@@ -9036,6 +9530,7 @@ function signalNcToTechnical(n){
   if(!to.length) toast('Aucune adresse du service technique : réglez-la dans Paramètres › Réglages partagés, ou créez un profil « Service technique » avec son adresse.');
   openMail(to, '[ISM] '+(n.gravite ? n.gravite+' — ' : '')+vesselName(n.vessel)+' — '+(n.numero ? n.numero+' ' : '')+(n.titre||''), ncMailText(n));
   updateDoc('nonconformities','nonconformities', n.id, {signaleLe:new Date().toISOString(), signalePar:state.me.name||''});
+  notifyRole('technique', 'Service technique contacté : '+ncLabel(n), (n.vessel ? vesselName(n.vessel)+' · ' : '')+(n.gravite||'')+(n.description ? ' — '+n.description : ''), {kind:'nc', id:n.id}, n.vessel);
   logHistory('nonconformities', n.id, ncLabel(n), 'signalé au service technique', n.vessel, to.join(', ') || 'sans destinataire');
 }
 function ncIsOpen(n){ return n.statut!=='Clôturée'; }
@@ -9384,7 +9879,7 @@ function viewDefautsIsm(slot){
     el('input',{type:'search', 'aria-label':'Rechercher dans le registre', 'data-fk':'recherche', placeholder:'Rechercher (n°, tâche, suivi par, commentaires)…', value:f.search,
       oninput:e=>{ f.search = e.target.value.toLowerCase(); renderContent(); }}));
   const viewSwitch = el('div',{class:'segmented', role:'group', 'aria-label':'Présentation'},
-    ...[['suivi','Suivi'],['ism','Registre ISM']].map(([k,l])=>el('button',{type:'button', class:'seg'+(f.view===k?' active':''), 'aria-pressed':String(f.view===k), 'data-fk':'nc-vue-'+k,
+    ...[['suivi','Suivi'],['ism','Contacter service technique']].map(([k,l])=>el('button',{type:'button', class:'seg'+(f.view===k?' active':''), 'aria-pressed':String(f.view===k), 'data-fk':'nc-vue-'+k,
       onclick:()=>{ f.view = k; renderContent(); }}, l)));
   slot.appendChild(el('div',{class:'toolbar'}, viewSwitch, search,
     sel('nc-navire', 'Filtrer par navire', f.vessel, [['','Tous navires'], ...VESSELS.map(v=>[v.key, v.name]), ['__flotte','Toute la flotte (commun)']], 'vessel'),
@@ -9422,7 +9917,7 @@ function viewDefautsIsm(slot){
   if(f.gravite) rows = rows.filter(n=>n.gravite===f.gravite);
   if(f.type) rows = rows.filter(n=>n.type===f.type);
   if(f.priorite) rows = rows.filter(n=>n.priorite===f.priorite);
-  if(f.search) rows = rows.filter(n=>[n.numero, n.titre, n.description, n.responsable, n.realisePar, n.besoin, n.commentaires, n.travauxRealises, n.constatePar, n.origine, equipmentName(n.equipmentId)].join(' ').toLowerCase().includes(f.search));
+  if(f.search) rows = rows.filter(n=>[n.numero, n.titre, n.description, n.responsable, n.realisePar, n.besoin, n.commentaires, n.travauxRealises, n.constatePar, n.origine, equipLabel(n)].join(' ').toLowerCase().includes(f.search));
   const sevOrder = {Critique:0, Majeure:1, Mineure:2};
   rows.sort((a,b)=>(ncIsOpen(b)-ncIsOpen(a)) || ((sevOrder[a.gravite]??2)-(sevOrder[b.gravite]??2)) || (ncIsLate(b)-ncIsLate(a)) || (b.dateConstat||'').localeCompare(a.dateConstat||''));
 
@@ -9441,6 +9936,7 @@ function viewDefautsIsm(slot){
   if(f.view==='suivi'){
     // présentation du tableau de suivi Excel
     const tb = el('tbody',{});
+    if(f.sort) rows = sortRows(rows, f, {date:n=>n.dateConstat, navire:n=>n.vessel ? vesselName(n.vessel) : 'Flotte', titre:n=>n.titre, priorite:n=>n.priorite, suivi:n=>n.responsable, realise:n=>n.realisePar, fait:n=>n.faitLe, etat:n=>n.statut});
     rows.forEach(n=>tb.appendChild(el('tr',{class:'row-click', tabindex:'0', 'data-fk':'ligne-'+n.id, onclick:()=>openNcModal(n)},
       el('td',{style:'white-space:nowrap;'}, fmtDate(n.dateConstat), el('div',{class:'hint', style:'margin:2px 0 0;'}, n.numero||'')),
       el('td',{}, n.vessel ? vesselName(n.vessel) : 'Flotte'),
@@ -9455,7 +9951,8 @@ function viewDefautsIsm(slot){
       el('td',{}, el('span',{html: ncIsOpen(n) ? ncStatusBadge(n) : '<span class="badge ok">Terminé</span>'}),
         (p=>p.total ? el('div',{class:'hint', style:'margin:2px 0 0;white-space:nowrap;'}, 'jobs '+p.done+'/'+p.total) : null)(ncJobsProgress(n))))));
     card.appendChild(el('div',{class:'table-wrap'}, el('table',{class:'nc-suivi'},
-      el('thead',{}, el('tr',{}, ...['Date','Navire','Tâche / défaut','Priorité','Suivi par','Réalisée par','Besoin','Commentaires','Tâches réalisées','Fait le','État'].map(h=>el('th',{}, h)))), tb)));
+      el('thead',{}, el('tr',{}, sortableTh('Date','date',f), sortableTh('Navire','navire',f), sortableTh('Tâche / défaut','titre',f), sortableTh('Priorité','priorite',f), sortableTh('Suivi par','suivi',f), sortableTh('Réalisée par','realise',f),
+        ...['Besoin','Commentaires','Tâches réalisées'].map(h=>el('th',{}, h)), sortableTh('Fait le','fait',f), sortableTh('État','etat',f))), tb)));
     slot.appendChild(card);
     slot.appendChild(fabIfAllowed(()=>openNcModal()));
     return;
@@ -9470,12 +9967,13 @@ function viewDefautsIsm(slot){
       el('td',{}, fmtDate(n.dateConstat)),
       el('td',{}, n.vessel ? vesselName(n.vessel) : 'Flotte'),
       el('td',{}, el('div',{style:'font-weight:600'}, n.titre||'—'),
-        el('div',{class:'hint', style:'margin:2px 0 0;'}, [n.type, n.origine, equipmentName(n.equipmentId), (p=>p.total ? 'jobs correctifs : '+p.done+'/'+p.total+' terminé(s)' : '')(ncJobsProgress(n))].filter(Boolean).join(' · '))),
+        el('div',{class:'hint', style:'margin:2px 0 0;'}, [n.type, n.origine, equipLabel(n), (p=>p.total ? 'jobs correctifs : '+p.done+'/'+p.total+' terminé(s)' : '')(ncJobsProgress(n))].filter(Boolean).join(' · '))),
       el('td',{html:ncSeverityBadge(n)}),
       el('td',{}, n.responsable||'—'),
       el('td',{}, fmtDate(n.echeance)),
       el('td',{html:ncStatusBadge(n)}),
-      el('td',{class:'row-actions'}, filesButton(n.attachments, ncLabel(n)))));
+      el('td',{class:'row-actions'}, filesButton(n.attachments, ncLabel(n)),
+        canInput() ? el('button',{class:'btn btn-ghost btn-sm', type:'button', style:'margin-left:6px;', 'data-fk':'contacter-'+n.id, onclick:()=>withUndo('Contacter le service technique', ()=>signalNcToTechnical(n)).then(()=>renderContent())}, 'Contacter') : null)));
   });
   table.appendChild(tbody);
   card.appendChild(el('div',{class:'table-wrap'}, table));
@@ -9533,7 +10031,7 @@ function openNcModal(n, prefill){
         field('Origine','origine','select', NC_ORIGINS.map(s=>({v:s,l:s})), base.origine||'Constat à bord'),
         field('Gravité','gravite','select', NC_SEVERITIES.map(s=>({v:s,l:s})), base.gravite||'Mineure')),
       field('Constaté par','constatePar','text', null, base.constatePar ?? (state.me.name||'')),
-      field('Élément du navire concerné','equipmentId','select', equipmentOptionsFor(vessel), base.equipmentId||''),
+      field('Catégorie ou élément concerné','equipmentId','select', equipmentLinkOptions(vessel), linkValue(base)),
       field('Description','description','textarea', null, base.description||''),
       isEdit ? el('div',{class:'settings-row'},
         el('div',{class:'hint', style:'margin:0;'}, n.signaleLe ? 'Signalé au service technique le '+fmtDateTime(n.signaleLe)+(n.signalePar ? ' par '+n.signalePar : '') : 'Pas encore signalé au service technique.'),
@@ -9589,7 +10087,7 @@ function openNcModal(n, prefill){
       const lierJob = d.lierJob; delete d.lierJob;
       const signaler = d.signaler==='1'; delete d.signaler;
       d.titre = d.titre.trim();
-      d.equipmentId = d.equipmentId || null;
+      applyEquipLink(d);
       delete d.jobId; // jobs correctifs : voir ci-dessous
       d.attachments = attachEl._getList();
       if(d.statut!=='Clôturée' && isEdit && n.statut==='Clôturée' && d.efficace==='Oui') d.efficace = ''; // réouverture : efficacité à réévaluer
@@ -9625,7 +10123,7 @@ function openNcModal(n, prefill){
       if(creerJob){
         const rec = state.nonconformities.find(x=>x.id===id);
         const job = {vessel:d.vessel, titre:rec.numero+' : '+d.titre, nature:'Réparation de défaut', statut:'À faire',
-          priorite: d.gravite==='Critique' ? 'Urgente' : 'Normale', equipmentId:d.equipmentId, assigneA:d.responsable||'',
+          priorite: d.gravite==='Critique' ? 'Urgente' : 'Normale', equipmentId:d.equipmentId, equipCat:d.equipCat, assigneA:d.responsable||'',
           dateEcheance:d.echeance||'', dateRealisation:'', description:d.actionCorrective, attachments:[], ncId:id};
         const jid = addDoc('jobs','jobs', job);
         logHistory('jobs', jid, job.titre, 'créé', d.vessel, 'action corrective de '+rec.numero);
@@ -10638,6 +11136,22 @@ function openDrydockModal(d, prefill){
   const isEdit = !!d;
   const base = d || prefill || {};
   let works = (base.travaux||[]).map(w=>({...w}));
+  let factures = (base.factures||[]).map(x=>({...x}));
+  const demandes = {...(base.demandesFacture||{})};
+  const invoicesBox = el('div',{'data-fk':'factures'});
+  function drawInvoices(){
+    invoicesBox.innerHTML = '';
+    const title = id=>(works.find(w=>w.id===id)||{}).libelle||'—';
+    factures.forEach(x=>invoicesBox.appendChild(el('div',{class:'settings-row', 'data-fk':'facture-'+x.id},
+      el('div',{}, el('div',{class:'lbl'}, x.prestataire+(x.numero ? ' — n° '+x.numero : '')+(x.montant!=='' && x.montant!=null ? ' — '+fmtEuros(x.montant) : '')),
+        el('div',{class:'desc'}, [x.statut, x.date ? fmtDate(x.date) : '', (x.travauxIds||[]).map(title).join(', ')].filter(Boolean).join(' · '))),
+      el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>openInvoiceModal(x, works, v=>{ factures = factures.map(y=>y===x ? v : y); drawInvoices(); drawWorks(); }, ()=>{ factures = factures.filter(y=>y!==x); drawInvoices(); drawWorks(); })}, 'Ouvrir'))));
+    const billed = new Set(factures.flatMap(x=>x.travauxIds||[]));
+    const todo = [...new Set(works.filter(w=>w.prestataire && !billed.has(w.id)).map(w=>w.prestataire))];
+    todo.forEach(p=>invoicesBox.appendChild(el('div',{class:'settings-row'}, el('div',{class:'desc'}, p+' : '+works.filter(w=>w.prestataire===p && !billed.has(w.id)).length+' travail(s) sans facture'+(demandes[p] ? ' · demandée le '+fmtDate(demandes[p]) : '')),
+      canInput() ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'demander-facture-'+normText(p).replace(/\W+/g,'-'), onclick:()=>{ demandes[p] = todayISO(); requestInvoiceMail(p, works.filter(w=>w.prestataire===p && !billed.has(w.id)), base.titre||'arrêt technique'); drawInvoices(); }}, 'Demander la facture') : null)));
+    if(canEdit()) invoicesBox.appendChild(el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'ajouter-facture', onclick:()=>openInvoiceModal(null, works, v=>{ factures.push(v); drawInvoices(); drawWorks(); })}, el('span',{html:iconPlus()}), 'Ajouter une facture'));
+  }
   const attachEl = attachmentsEditor(d?.attachments, {label:'Devis, factures, rapports de chantier, photos'});
   const worksBox = el('div',{class:'dock-works'});
   const totalsBox = el('div',{class:'hint', style:'margin:6px 0 0;'});
@@ -10662,11 +11176,12 @@ function openDrydockModal(d, prefill){
           el('td',{}, el('input',{type:'text', class:'select', 'aria-label':'Travail', 'data-w':'libelle', value:w.libelle||'', readonly: canEdit() ? null : '', oninput:e=>{ w.libelle = e.target.value; }}),
             w.date || w.notes ? el('div',{class:'hint', style:'margin:2px 0 0;'}, [w.date ? (/^\d{4}-/.test(w.date) ? fmtDate(w.date) : w.date) : '', w.notes].filter(Boolean).join(' · ')) : null,
             linked ? el('div',{class:'hint', style:'margin:2px 0 0;'}, (w.taskId ? 'Job récurrent' : 'Job ponctuel')+' · ',
-              el('button',{type:'button', class:'link-btn', onclick:()=>w.taskId ? openTaskModal(linked) : openJobModal(linked)}, 'Ouvrir')) : null),
+              el('button',{type:'button', class:'link-btn', onclick:()=>w.taskId ? openTaskModal(linked) : openJobModal(linked)}, 'Ouvrir')) : null,
+            w.responsable || w.statut==='En cours' || w.cloturePar || (w.attachments||[]).length || (w.photosCloture||[]).length || factures.some(x=>(x.travauxIds||[]).includes(w.id)) ? el('div',{class:'hint', style:'margin:2px 0 0;'}, [w.statut==='En cours' ? 'En cours' : '', w.responsable ? 'resp. '+w.responsable : '', w.cloturePar ? 'clôturé par '+w.cloturePar : '', (w.attachments||[]).length ? (w.attachments.length+' doc.') : '', (w.photosCloture||[]).length ? (w.photosCloture.length+' photo(s) de clôture') : '', ...factures.filter(x=>(x.travauxIds||[]).includes(w.id)).map(x=>'facture '+(x.numero||x.prestataire))].filter(Boolean).join(' · ')) : null),
           el('td',{}, el('input',{type:'text', class:'select', 'aria-label':'Prestataire', 'data-w':'prestataire', value:w.prestataire||'', readonly: canEdit() ? null : '', oninput:e=>{ w.prestataire = e.target.value; }})),
           el('td',{}, el('input',{type:'number', inputmode:'decimal', min:'0', step:'any', class:'select', style:'width:110px;', 'aria-label':'Coût en euros', 'data-w':'cout', value:w.cout ?? '', readonly: canEdit() ? null : '',
             oninput:e=>{ w.cout = e.target.value; refreshTotals(); }})),
-          el('td',{}, canEdit() ? el('button',{type:'button', class:'btn-danger-text', 'aria-label':'Retirer « '+w.libelle+' »', onclick:()=>{
+          el('td',{style:'white-space:nowrap;'}, el('button',{type:'button', class:'btn btn-ghost btn-sm', 'data-fk':'detail-travail-'+w.id, onclick:()=>openWorkDetailModal(w, ()=>drawWorks())}, 'Détails'), ' ', canEdit() ? el('button',{type:'button', class:'btn-danger-text', 'aria-label':'Retirer « '+w.libelle+' »', onclick:()=>{
             confirmModal('Retirer « '+(w.libelle||'ce travail')+' » de la liste des travaux ? (Le job lié, s’il y en a un, n’est pas supprimé.)', ()=>{ works = works.filter(x=>x!==w); drawWorks(); });
           }}, 'Retirer') : null));
       })))));
@@ -10681,7 +11196,7 @@ function openDrydockModal(d, prefill){
       }}, 'Reprendre les jobs dus pendant l’arrêt')));
     refreshTotals();
   }
-  drawWorks();
+  drawWorks(); drawInvoices();
   const body = el('div',{},
     fieldRow(field('Navire','vessel','select', VESSELS.map(v=>({v:v.key,l:v.name})), base.vessel||state.activeVessel),
       field('Type','type','select', DRYDOCK_TYPES.map(s=>({v:s,l:s})), base.type||'Carénage')),
@@ -10691,6 +11206,7 @@ function openDrydockModal(d, prefill){
     fieldRow(field('Début','debut','date', null, base.debut||''), field('Fin','fin','date', null, base.fin||'')),
     field('Budget (€)','budget','number', null, base.budget ?? ''),
     el('div',{class:'record-history', style:'margin-bottom:14px;'}, el('div',{class:'rh-title'}, 'Travaux'), worksBox, totalsBox),
+    el('div',{class:'record-history', style:'margin-bottom:14px;'}, el('div',{class:'rh-title'}, 'Factures par prestataire'), invoicesBox),
     field('Notes','notes','textarea', null, base.notes||''),
     attachEl,
     isEdit ? recordHistorySection(d) : null);
@@ -10717,6 +11233,7 @@ function openDrydockModal(d, prefill){
       data.budget = data.budget==='' ? '' : Number(data.budget);
       data.travaux = works.map(w=>({...w, libelle:String(w.libelle).trim(), cout: w.cout==='' || w.cout==null ? '' : Number(w.cout)}));
       data.attachments = attachEl._getList();
+      data.factures = factures; data.demandesFacture = demandes;
       if(isEdit){
         updateDoc('drydocks','drydocks', d.id, data);
         const tt = drydockTotals(data);
@@ -10768,7 +11285,8 @@ function myHoursKeys(){
   const p = currentProfile();
   return p ? ['user:'+p.id, ...(p.crewId ? ['crew:'+p.crewId] : [])] : [];
 }
-function canEditHoursOf(key){ return uiWritable() && (canEdit() || myHoursKeys().includes(key)); }
+/* saisie : la personne elle-même, ou l'administrateur ; le capitaine et le service technique consultent */
+function canEditHoursOf(key){ return uiWritable() && (currentRole()==='admin' || myHoursKeys().includes(key)); }
 /* consultation : chacun ne voit que ses propres heures ; capitaine, service technique
    et administrateur voient celles de tout le monde */
 const HOURS_VIEW_ALL_ROLES = ['admin','technique','capitaine'];
@@ -10846,6 +11364,7 @@ function saveWorkDay(key, date, periods, extra){
   const rec = state.workHours.find(w=>w.id===id);
   const data = {personKey:key, date, periods:clean, ...(extra||{})};
   if(data.absence==null && rec) data.absence = rec.absence || '';
+  if(data.frais===undefined && rec){ data.frais = rec.frais ?? ''; data.fraisNote = rec.fraisNote || ''; }
   if(rec) updateDoc('workHours','workHours', id, data);
   else{
     const now = new Date().toISOString();
@@ -10919,7 +11438,7 @@ function viewHeures(slot){
     h.view==='releve' && people.length>1 ? personSel : null,
     h.view==='releve' && h.person ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'heures-pdf', onclick:()=>printSheet(buildHoursSheet(h.person, h.month))}, el('span',{html:iconPrinter()}), 'Relevé PDF') : null,
     people.length ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'heures-csv', onclick:()=>exportHoursCSV(h.month)}, 'Export CSV') : null,
-    canEdit() ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'heures-import', onclick:pickHoursFile}, 'Importer Excel…') : null,
+    currentRole()==='admin' && uiWritable() ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'heures-import', onclick:pickHoursFile}, 'Importer Excel…') : null,
     canConfigure() ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'heures-regles', onclick:openTicketRulesModal}, 'Tickets restaurant…') : null));
   if(!people.length){
     slot.appendChild(el('div',{class:'card empty'}, el('h3',{}, all ? 'Personne à suivre' : 'Vos heures'), all
@@ -10942,6 +11461,7 @@ function viewHoursMonth(slot, key, ym){
   tile('Repos à vérifier', String(tot.alertDays), tot.alertDays ? 'jour(s) hors des règles de repos' : 'règles de repos respectées');
   const abs = Object.entries(monthAbsences(key, ym));
   tile('Absences', String(abs.reduce((s,[,n])=>s+n, 0)), abs.length ? abs.map(([t,n])=>t+' : '+n).join(' · ') : 'aucune');
+  if(currentRole()==='admin'){ const frais = monthDays(ym).reduce((s,d)=>s+(Number((workRecord(key, d)||{}).frais)||0), 0); if(frais) tile('Frais du mois', fmtEuros(round2(frais)), 'visible par l’administrateur seulement'); }
   slot.appendChild(tiles);
   if(tot.alertDays) slot.appendChild(el('div',{class:'banner banner-danger', role:'status'}, 'Heures de repos non respectées '+tot.alertDays+' jour(s) ce mois-ci : voir les lignes signalées (règles : 10 h de repos sur 24 h, 77 h sur 7 jours, 2 périodes de repos au plus dont une de 6 h, 14 h au plus entre deux repos).'));
   const tbody = el('tbody',{});
@@ -10976,7 +11496,8 @@ function viewHoursMonth(slot, key, ym){
       el('td',{}, el('input',{type:'checkbox', 'aria-label':'Ticket restaurant le '+fmtDate(d), 'data-fk':'wh-ticket-'+d, checked: dayTickets(rec) ? '' : null, disabled: editable && rec ? null : '',
         onchange:e=>withUndo('Ticket du '+fmtDate(d), ()=>{ saveWorkDay(key, d, per, {ticket: e.target.checked ? 1 : 0}); }).then(()=>renderContent())})),
       el('td',{class:'wh-issues'}, issues.length ? el('span',{class:'badge retard', title:issues.join('\n')}, 'Repos') : null,
-        issues.length ? el('div',{class:'hint', style:'margin:2px 0 0;'}, issues.join(' ; ')) : null, rec && rec.notes ? el('div',{class:'hint', style:'margin:2px 0 0;'}, rec.notes) : null),
+        issues.length ? el('div',{class:'hint', style:'margin:2px 0 0;'}, issues.join(' ; ')) : null, rec && rec.notes ? el('div',{class:'hint', style:'margin:2px 0 0;'}, rec.notes) : null,
+        currentRole()==='admin' && rec && rec.frais ? el('div',{class:'hint', style:'margin:2px 0 0;', 'data-fk':'wh-frais-'+d}, 'Frais : '+rec.frais+' €'+(rec.fraisNote ? ' — '+rec.fraisNote : '')) : null),
       el('td',{}, el('button',{class:'btn btn-ghost btn-sm', type:'button', 'aria-label':'Détail du '+fmtDate(d), 'data-fk':'wh-detail-'+d, onclick:()=>openWorkDayModal(key, d)}, '…'))));
     if(wd===0 || i===days.length-1){
       const wk = weekTotals(key, mondayOf(d));
@@ -11019,6 +11540,7 @@ function openWorkDayModal(key, date){
       rec && (rec.ticket===0 || rec.ticket===1) ? String(rec.ticket) : ''),
     field('Absence','absence','select', [{v:'',l:'— aucune —'}, ...ABSENCE_TYPES.map(a=>({v:a, l:a}))], rec ? rec.absence||'' : '', 'congé, maladie, récupération…'),
     field('Note','notes','text', null, rec ? rec.notes||'' : '', 'ex. escale, quart de nuit, formation'),
+    currentRole()==='admin' ? fieldRow(field('Frais (€)','frais','number', null, rec ? rec.frais ?? '' : '', 'visible par l’administrateur seulement'), field('Commentaire des frais','fraisNote','text', null, rec ? rec.fraisNote||'' : '')) : null,
     (()=>{ const iss = restIssues(key, date, date)[date]; return iss ? el('div',{class:'banner banner-danger'}, 'Repos : '+iss.join(' ; ')) : null; })());
   openModal({title:hoursPersonName(key)+' — '+WEEKDAYS_FR[new Date(date+'T12:00:00').getDay()]+' '+fmtDate(date), body, readOnly: !editable,
     validate: ()=>{
@@ -11029,7 +11551,8 @@ function openWorkDayModal(key, date){
       return null;
     },
     onSubmit: async data=>{
-      saveWorkDay(key, date, periods, {ticket: data.ticket==='' ? null : Number(data.ticket), notes:data.notes.trim(), absence:data.absence||''});
+      saveWorkDay(key, date, periods, {ticket: data.ticket==='' ? null : Number(data.ticket), notes:data.notes.trim(), absence:data.absence||'',
+        ...(currentRole()==='admin' ? {frais:data.frais==='' ? '' : Number(data.frais), fraisNote:data.fraisNote.trim()} : {})});
       toast('Heures enregistrées', 'success');
     }});
 }
@@ -11130,7 +11653,7 @@ async function importHoursFile(file){
       return el('div',{class:'settings-row'}, el('div',{}, el('div',{class:'lbl'}, 'Onglet « '+s.name+' » : '+(s.data.person||'nom absent')),
         el('div',{class:'desc'}, MONTHS_FR[s.data.month-1]+' '+s.data.year+' · '+s.data.days.length+' jour(s) renseigné(s)')), sel);
     }));
-  openModal({title:'Importer des relevés d’heures — '+file.name, body, wide:true, submitLabel:'Importer', readOnly: !canEdit(),
+  openModal({title:'Importer des relevés d’heures — '+file.name, body, wide:true, submitLabel:'Importer', readOnly: !canManageProfiles(),
     validate: d=>Object.keys(d).some(k=>k.startsWith('onglet-') && d[k]) ? null : 'Choisissez la personne d’au moins un relevé.',
     onSubmit: async d=>{
       let n = 0;
@@ -11165,7 +11688,7 @@ const REMIND_DEFAULT_DAYS = 7;
 function remindDays(){ const n = Number(prefStore.getItem('sw_remind_days')); return n>0 ? n : REMIND_DEFAULT_DAYS; }
 /* éléments à rappeler : {when:'retard'|'aujourdhui'|'bientot', date, label, sub, vessel, type, open} */
 function reminderItems(days){
-  const t = todayISO(), lim = addDays(t, days ?? remindDays());
+  const t = todayISO(), baseDays = days ?? remindDays(), lim = addDays(t, Math.max(baseDays, ...Object.values(notifDelays()).map(Number).filter(n=>n>0)));
   const items = [], seen = new Set();
   const push = it=>{ if(seen.has(it.key)) return; seen.add(it.key); items.push(it); };
   const whenOf = (date, status)=>status==='retard' || (date && date<t) ? 'retard' : date===t ? 'aujourdhui' : 'bientot';
@@ -11184,8 +11707,12 @@ function reminderItems(days){
     if(a.debut>=t && a.debut<=lim) push({key:'emb:'+a.id, when:whenOf(a.debut), date:a.debut, label:'Embarquement de '+who, sub:'Planning d’équipage'+(a.poste ? ' · '+a.poste : ''), vessel:a.vessel, type:'equipage', open:()=>openAssignmentModal(a)});
     if(a.fin && a.fin>=t && a.fin<=lim) push({key:'deb:'+a.id, when:whenOf(a.fin), date:a.fin, label:'Débarquement de '+who, sub:'Planning d’équipage', vessel:a.vessel, type:'equipage', open:()=>openAssignmentModal(a)});
   });
+  // certificats des marins visibles par cette personne, révisions de documents
+  state.crewDocs.filter(d=>d.kind==='certificat' && d.dateExpiration && d.dateExpiration<=lim && canSeeCrewDocs(d.crewId, 'certificat')).forEach(d=>push({key:'cd:'+d.id, when:whenOf(d.dateExpiration), date:d.dateExpiration,
+    label:(d.nom||'Certificat')+' — '+crewFullName(crewMember(d.crewId)), sub:'Certificat marin'+(d.type ? ' · '+d.type : ''), vessel:null, type:'crewCerts', open:()=>openCrewDocModal(d)}));
+  state.documents.filter(d=>d.dateRevision && d.dateRevision<=lim).forEach(d=>push({key:'docrev:'+d.id, when:whenOf(d.dateRevision), date:d.dateRevision, label:'Révision : '+d.titre, sub:'Documentation', vessel:d.vessel||null, type:'documents', open:()=>openDocumentModal(d)}));
   const order = {retard:0, aujourdhui:1, bientot:2};
-  return items.filter(i=>inVesselScope(i.vessel)).sort((a,b)=>order[a.when]-order[b.when] || (a.date||'').localeCompare(b.date||''));
+  return items.filter(i=>inVesselScope(i.vessel) && (i.when!=='bientot' || !i.date || i.date<=addDays(t, notifDelay(i.type, baseDays)))).sort((a,b)=>order[a.when]-order[b.when] || (a.date||'').localeCompare(b.date||''));
 }
 function reminderSummary(items){
   const n = w=>items.filter(i=>i.when===w).length;
@@ -11200,9 +11727,10 @@ function maybeNotifyOnOpen(){
   if(prefStore.getItem('sw_notify_last')===todayISO()) return false;
   const items = reminderItems().filter(i=>i.when!=='bientot');
   prefStore.setItem('sw_notify_last', todayISO());
-  if(!items.length) return false;
+  const unread = unreadNotifications().length;
+  if(!items.length && !unread) return false;
   const title = 'Seaway GMAO — rappels du jour';
-  const opts = {body: reminderSummary(items)+'\n'+items.slice(0,3).map(i=>(i.vessel ? vesselName(i.vessel)+' : ' : '')+i.label).join('\n'), tag:'seaway-rappels', icon:'icons/icon-192.png'};
+  const opts = {body: (unread ? unread+' message(s) non lu(s)\n' : '')+reminderSummary(items)+'\n'+items.slice(0,3).map(i=>(i.vessel ? vesselName(i.vessel)+' : ' : '')+i.label).join('\n'), tag:'seaway-rappels', icon:'icons/icon-192.png'};
   // Android n'accepte que les notifications du service worker (clic géré dans sw.js) ;
   // sans service worker (fichier ouvert en local) : notification de la page
   (async()=>{
@@ -11358,7 +11886,7 @@ const HISTORY_TYPES = [
   ['inventory','Inventaire'], ['orders','Commande'], ['fuel','Carburant/huile'],
   ['vessel_certs','Certificat navire'], ['crew_certs','Certificat marin'], ['meters','Compteur'], ['documents','Documentation'], ['sheets','Tableur partagé'], ['crew','Membre d’équipage'],
   ['nonconformities','Défaut / NC (ISM)'], ['crewAssignments','Planning d’équipage'], ['drydocks','Arrêt technique'],
-  ['users','Profil'], ['settings','Réglage'], ['workHours','Heures de travail'], ['crewPlan','Planning journalier'], ['vesselPlan','Organisation des navires'], ['undo','Annulation'], ['backup','Archive']
+  ['crewDocs','Document de marin'], ['users','Profil'], ['settings','Réglage'], ['workHours','Heures de travail'], ['crewPlan','Planning journalier'], ['vesselPlan','Organisation des navires'], ['undo','Annulation'], ['backup','Archive']
 ];
 function historyTypeLabel(t){ const f = HISTORY_TYPES.find(x=>x[0]===t); return f?f[1]:t; }
 function viewHistorique(slot){
@@ -11614,7 +12142,7 @@ function downloadFile(filename, data, type){
 const CSV_EXPORTS = [
   {key:'tasks', label:'Jobs récurrents', cols:[
     {label:'Navire', get:r=>vesselName(r.vessel)}, {label:'Catégorie', key:'category'}, {label:'Job', key:'task'},
-    {label:'Élément', get:r=>equipmentName(r.equipmentId)||''}, {label:'Suivi', get:r=>r.unit==='heures'?'Compteur '+meterLabel(r.meter):'Date'},
+    {label:'Élément', get:r=>equipLabel(r)||''}, {label:'Suivi', get:r=>r.unit==='heures'?'Compteur '+meterLabel(r.meter):'Date'},
     {label:'Périodicité', key:'periodicity'}, {label:'Dernière', key:'lastDate'}, {label:'Prochaine', key:'nextDate'},
     {label:'Heures au dernier entretien', key:'hoursAtLast'}, {label:'Cycle (h)', key:'cycleHours'},
     {label:'Réalisations', get:r=>(r.completions||[]).length}, {label:'Observations', key:'observations'}
@@ -11626,7 +12154,7 @@ const CSV_EXPORTS = [
   ]},
   {key:'jobs', label:'Jobs ponctuels', cols:[
     {label:'Navire', get:r=>vesselName(r.vessel)}, {label:'Titre', key:'titre'}, {label:'Nature', get:r=>r.nature||'Réparation de défaut'},
-    {label:'Élément', get:r=>equipmentName(r.equipmentId)||''}, {label:'Statut', key:'statut'},
+    {label:'Élément', get:r=>equipLabel(r)||''}, {label:'Statut', key:'statut'},
     {label:'Priorité', key:'priorite'}, {label:'Échéance', key:'dateEcheance'}, {label:'Réalisé le', key:'dateRealisation'}, {label:'Description', key:'description'}
   ]},
   {key:'equipment', label:'Éléments du navire', cols:[
@@ -11635,7 +12163,7 @@ const CSV_EXPORTS = [
   {key:'inventory', label:'Inventaire', cols:[
     {label:'Lieu', get:r=>invLocName(r)}, {label:'Type', get:r=>inventoryNatureLabel(r)}, {label:'Désignation', key:'designation'}, {label:'Référence', key:'reference'},
     {label:'Réf. fournisseur', key:'refFournisseur'}, {label:'Marque', key:'marque'}, {label:'Fournisseur', key:'fournisseur'}, {label:'En place', key:'enPlace'},
-    {label:'Élément', get:r=>equipmentName(r.equipmentId)||''}, {label:'Catégorie', key:'categorie'},
+    {label:'Élément', get:r=>equipLabel(r)||''}, {label:'Catégorie', key:'categorie'},
     {label:'Quantité', key:'quantite'}, {label:'Unité', key:'unite'}, {label:'Emplacement', key:'emplacement'}, {label:'Seuil alerte', key:'seuilAlerte'}
   ]},
   {key:'orders', label:'Commandes', cols:[
@@ -11667,17 +12195,18 @@ const CSV_EXPORTS = [
   ]},
   {key:'crew', label:'Membres d’équipage', cols:[
     {label:'Nom', key:'nom'}, {label:'Prénom', key:'prenom'}, {label:'Poste', key:'poste'},
-    {label:'Passeport', key:'passeport'}, {label:'Date de naissance', key:'dateNaissance'},
+    {label:'Téléphone', key:'telephone'}, {label:'E-mail', key:'email'}, {label:'Adresse postale', key:'adresse'}, {label:'Date de naissance', key:'dateNaissance'},
+    {label:'Qualifié navires', get:r=>(r.qualifBateaux||[]).map(vesselName).join(', ')}, {label:'Habilitation grue', get:r=>r.habilGrue==='oui' ? 'Oui' : 'Non'}, {label:'Qualifié grue', get:r=>(r.qualifGrue||[]).map(vesselName).join(', ')},
     {label:'Aujourd’hui (planning)', get:r=>{ const x = crewPlanAt(r.id, todayISO()); return x ? crewPlanLabel(x) : ''; }}
   ]},
   {key:'documents', label:'Documentation technique', cols:[
     {label:'Titre', key:'titre'}, {label:'Type', key:'type'}, {label:'Navire', get:r=>r.vessel?vesselName(r.vessel):'Toute la flotte'},
-    {label:'Élément', get:r=>equipmentName(r.equipmentId)||''}, {label:'Référence', key:'reference'}, {label:'Version', key:'version'},
+    {label:'Élément', get:r=>equipLabel(r)||''}, {label:'Référence', key:'reference'}, {label:'Version', key:'version'},
     {label:'Date', key:'dateDoc'}, {label:'Fichiers', get:r=>(r.attachments||[]).map(a=>a.name).join(' ; ')}
   ]},
   {key:'sheets', label:'Tableurs partagés', cols:[
     {label:'Titre', key:'titre'}, {label:'Service', get:r=>SHEET_PROVIDERS[sheetProvider(r.url)].label}, {label:'Lien', key:'url'},
-    {label:'Navire', get:r=>r.vessel?vesselName(r.vessel):'Toute la flotte'}, {label:'Élément', get:r=>equipmentName(r.equipmentId)||''},
+    {label:'Navire', get:r=>r.vessel?vesselName(r.vessel):'Toute la flotte'}, {label:'Élément', get:r=>equipLabel(r)||''},
     {label:'Catégorie', key:'categorie'}, {label:'Notes', key:'notes'}
   ]},
   {key:'nonconformities', label:'Défaut/NC (suivi et registre ISM)', cols:[
@@ -11685,7 +12214,7 @@ const CSV_EXPORTS = [
     {label:'Priorité', key:'priorite'}, {label:'Suivi par', key:'responsable'}, {label:'Réalisée par', key:'realisePar'}, {label:'Besoin', key:'besoin'},
     {label:'Commentaires', key:'commentaires'}, {label:'Tâches réalisées', key:'travauxRealises'}, {label:'Fait le', key:'faitLe'},
     {label:'Type', key:'type'}, {label:'Origine', key:'origine'}, {label:'Gravité', key:'gravite'}, {label:'Constaté par', key:'constatePar'},
-    {label:'Élément', get:r=>equipmentName(r.equipmentId)||''}, {label:'Description', key:'description'}, {label:'Causes', key:'causes'},
+    {label:'Élément', get:r=>equipLabel(r)||''}, {label:'Description', key:'description'}, {label:'Causes', key:'causes'},
     {label:'Action immédiate', key:'actionImmediate'}, {label:'Action corrective', key:'actionCorrective'},
     {label:'Échéance', key:'echeance'}, {label:'Statut', key:'statut'}, {label:'Jobs correctifs', get:r=>ncJobs(r).map(j=>j.titre+' ('+(j.statut||'À faire')+')').join(' ; ')},
     {label:'Efficace', key:'efficace'}, {label:'Vérifié par', key:'verifPar'}, {label:'Vérifié le', key:'verifDate'}, {label:'Commentaire de vérification', key:'verifCommentaire'}
@@ -11802,7 +12331,7 @@ function exportSpecPdf(spec){ printSheet(buildExportSheet(spec)); }
    APP_BUILD est inscrit à la publication (tools/preparer-deploiement.ps1) :
    « aaaammjj-hhmm-empreinte ». Fichier ouvert en local : version non numérotée.
    La recherche de mise à jour lit version.json sur le site publié. */
-const APP_BUILD = '20261024-1720-a77dafcd1482';
+const APP_BUILD = '20261108-1653-5ac8c9b54a68';
 function appBuildInfo(build){
   const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(?:-(\w+))?/.exec(build||'');
   return m ? {build, date:m[1]+'-'+m[2]+'-'+m[3], time:m[4]+':'+m[5], label:m[3]+'/'+m[2]+'/'+m[1]+' à '+m[4]+'h'+m[5]} : null;
@@ -12105,6 +12634,7 @@ function viewParametres(slot){
     el('div',{class:'section-sub', style:'margin-bottom:12px;'}, 'Chaque module en Excel (.xlsx), en PDF (tableau à imprimer ou enregistrer) ou en CSV. « Tout exporter » réunit tous les modules dans un classeur Excel, un onglet par module.'),
     el('div',{style:'display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;'},
       el('button',{class:'btn btn-primary btn-sm', type:'button', 'data-fk':'export-tout-xlsx', onclick:()=>exportAllXlsx()}, 'Tout exporter (Excel)'),
+      el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'reimporter-sauvegarde', onclick:triggerImportInput}, 'Réimporter une sauvegarde et fusionner…'),
       el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:exportFullBackup}, 'Sauvegarde complète (.json)'))
   );
   const exportList = el('div',{class:'export-list'});
@@ -12883,8 +13413,8 @@ autotest('Saisie à bord', 'écran : compteurs, jobs à faire en tête, exercice
   expect.equal(slot.querySelectorAll('.bord-meter').length, 3);
   expect.ok(slot.querySelector('.bord-meter').textContent.includes('1'), 'valeur du compteur');
   const sections = [...slot.querySelectorAll('.bord-section')].map(x=>x.querySelector('h2').textContent);
-  expect.equal(sections.join('|'), 'Relever un compteur|Jobs à faire|Exercices & drills|Défauts et jobs ponctuels ouverts');
-  const jobs = [...slot.querySelectorAll('.bord-section')[1].querySelectorAll('.bord-row-title')].map(x=>x.textContent);
+  expect.equal(sections.join('|'), 'Relever un compteur|Défauts et jobs ponctuels ouverts|Jobs à faire|Exercices & drills');
+  const jobs = [...slot.querySelectorAll('.bord-section')[2].querySelectorAll('.bord-row-title')].map(x=>x.textContent);
   expect.equal(jobs.join('|'), 'En retard', 'seulement les jobs à faire');
   slot.querySelector('.bord-meter').click();
   expect.ok($('.modal h3').textContent.includes('MP bâbord') && $('.modal [name=heures]').getAttribute('inputmode')==='decimal', 'relevé avec pavé numérique');
@@ -13452,7 +13982,7 @@ autotest('Compteurs', 'Entretien : panneau MP1/MP2/DG, historique et remise à z
   render(); state.route = '#/entretien'; renderContent();
   const cards = $$('#content-slot .meter-card');
   expect.equal(cards.length, 3);
-  expect.ok(cards.map(c=>c.querySelector('.meter-key').textContent).join('|')==='Compteur MP bâbord|Compteur MP tribord|Compteur DG');
+  expect.ok(cards.map(c=>c.querySelector('.meter-key').textContent).join('|')==='Compteur MP bâbord|Compteur MP tribord|Compteur GE');
   expect.ok(cards[1].textContent.includes('700'));
   openMeterHistory('men-du','mp2');
   expect.equal($$('.modal tbody tr').length, 1);
@@ -13923,7 +14453,7 @@ autotest('Tableurs', 'migration : collection sheets ajoutée (format 5)', ()=>{
 /* ===================== Certificats navire / équipage ===================== */
 function crewFixture(){
   const t = todayISO();
-  const a = addDoc('crew','crew',{nom:'Le Goff', prenom:'Jean', poste:'Capitaine', navireAffecte:'men-du', passeport:'19AB12345', dateEmbarquement:addDays(t,-30)});
+  const a = addDoc('crew','crew',{nom:'Le Goff', prenom:'Jean', poste:'Capitaine', navireAffecte:'men-du', telephone:'0619121234', dateEmbarquement:addDays(t,-30)});
   const b = addDoc('crew','crew',{nom:'Kerhervé', prenom:'Marie', poste:'Chef mécanicien', navireAffecte:'viga', dateEmbarquement:addDays(t,-100), dateDebarquement:addDays(t,-5)});
   const c = addDoc('crew','crew',{nom:'Tanguy', prenom:'Paul', poste:'Matelot', navireAffecte:'men-du', dateEmbarquement:addDays(t,10)});
   return {a, b, c};
@@ -13959,11 +14489,11 @@ autotest('Équipage', 'pas de navire attitré : « aujourd’hui » d’après l
   render(); state.route = '#/equipage';
   const rows = ()=>$$('#content-slot tbody tr').length;
   renderContent(); expect.equal(rows(), 3);
-  expect.ok(!$('#content-slot').textContent.toLowerCase().includes('certificat'), 'aucune mention de certificat');
+  expect.ok(!$('#content-slot table').textContent.toLowerCase().includes('certificat'), 'aucune mention de certificat dans la liste');
   expect.ok($('#content-slot [data-fk="ligne-'+b+'"]').textContent.includes('Viga — matin'), 'situation du jour');
   state._crewVessel = 'men-du'; renderContent(); expect.equal(rows(), 1, 'à bord du Men Du aujourd’hui');
   state._crewVessel = '__terre'; renderContent(); expect.equal(rows(), 1, 'pas à bord'); state._crewVessel = '';
-  state._crewSearch = '19ab'; renderContent(); expect.equal(rows(), 1, 'passeport'); state._crewSearch = '';
+  state._crewSearch = '06191'; renderContent(); expect.equal(rows(), 1, 'téléphone'); state._crewSearch = '';
   state.route = '#/certificats-marins'; renderContent(); expect.equal(rows(), 3, 'ancienne adresse toujours valable');
   prefStore.setItem('sw_vessel_lock', 'viga'); applyVesselLock(); state.route = '#/equipage'; renderContent();
   expect.equal(rows(), 3, 'mode un seul navire : tous les marins restent listés');
@@ -13972,10 +14502,13 @@ autotest('Équipage', 'pas de navire attitré : « aujourd’hui » d’après l
 autotest('Équipage', 'fiche marin : création sans navire ni dates d’embarquement', async ()=>{
   openCrewModal();
   expect.ok(!$('.modal [name=navireAffecte]') && !$('.modal [name=dateEmbarquement]'), 'pas de navire attitré');
-  fillModal({nom:'Le Bihan', prenom:'Anne', poste:'Matelot', passeport:'AA000', dateNaissance:'1990-05-04'});
+  expect.ok(!$('.modal [name=passeport]'), 'plus de numéro de passeport');
+  fillModal({nom:'Le Bihan', prenom:'Anne', poste:'Matelot', telephone:'0600000000', email:'anne@seaway.fr', adresse:'Quai 1', habilGrue:'oui', dateNaissance:'1990-05-04'});
+  $('.modal [data-fk=qb-viga]').click(); $('.modal [data-fk=qg-viga]').click();
   confirmTopModal(); await tick(30);
   const m = state.crew[0];
-  expect.ok(m.nom==='Le Bihan' && m.passeport==='AA000' && m.dateNaissance==='1990-05-04');
+  expect.ok(m.nom==='Le Bihan' && m.telephone==='0600000000' && m.email==='anne@seaway.fr' && m.adresse==='Quai 1' && m.dateNaissance==='1990-05-04');
+  expect.ok(m.habilGrue==='oui' && m.qualifBateaux[0]==='viga' && m.qualifGrue[0]==='viga', 'qualifications');
   expect.equal($$('.modal').length, 0, 'plus de fiche rouverte pour les certificats');
 });
 autotest('Équipage', 'format 8 : certificats marins (dont médicaux) retirés, marins gardés', ()=>{
@@ -14558,7 +15091,7 @@ autotest('Planning journalier', 'codes du classeur reconnus (précisions et alia
   expect.equal(t('cp pater'), 'CPATER|'); expect.equal(t('congés pater période facultative'), 'CPATER|période facultative');
   expect.equal(t('QUICK am/M AM'), 'QCK|am/M AM'); expect.equal(t('MED II'), 'MED|'); expect.equal(t('Kernivilit'), 'KERN|');
   expect.equal(t('Retour Arcachon'), '|Retour Arcachon', 'texte libre : code vide, gardé en précision');
-  expect.ok(parseSnapshot(fileText({version:9})).crewPlan.length===0 && SCHEMA_VERSION===10, 'format 10');
+  expect.ok(parseSnapshot(fileText({version:9})).crewPlan.length===0 && SCHEMA_VERSION===12, 'format 12');
 });
 autotest('Planning journalier', 'tableau marins × jours : remplissage au pinceau, filtre navire, organisation des navires', async ()=>{
   const {h, pl, days} = planFixture();
@@ -15720,7 +16253,7 @@ autotest('Affichage des menus', 'menu regroupé : 11 entrées, chaque module dan
   expect.ok($('.sidebar [data-fk="nav-groupe-agenda"]').classList.contains('active'), 'groupe actif');
   const sub = $('#content-slot .subnav');
   expect.ok(sub && sub === $('#content-slot').firstElementChild, 'onglets en tête de page');
-  expect.equal($$('.subnav-item', sub).map(a=>a.textContent).join('|'), 'Calendrier|Rappels');
+  expect.equal($$('.subnav-item', sub).map(a=>a.textContent).join('|'), 'Calendrier|Rappels|Notifications');
   expect.ok($('[data-fk="subnav-#/rappels"]', sub).classList.contains('active'));
   state.route = '#/dashboard'; render();
   expect.equal(groupEntryRoute(NAV_GROUPS.find(g=>g.id==='agenda')), '#/rappels', 'le groupe rouvre la dernière page visitée');
@@ -16291,9 +16824,237 @@ autotest('Paramètres', 'export Excel (.xlsx) relu par le lecteur de classeurs, 
   expect.ok($('#content-slot [data-fk=export-pdf-orders]'), 'bouton PDF');
   state.route = '#/autotest';
 });
+autotest('Format', 'format 11 : collections ajoutées, passeports retirés des fiches et de l’historique', ()=>{
+  const obj = parseSnapshot(fileText({version:10, crew:[{id:'a', nom:'X', passeport:'19AB'}], history:[{entityType:'crew', detail:'Poste : A → B · Passeport : 1 → 2'}]}));
+  expect.ok(Array.isArray(obj.crewDocs) && Array.isArray(obj.notifications));
+  expect.ok(!('passeport' in obj.crew[0]));
+  expect.equal(obj.history[0].detail, 'Poste : A → B');
+});
+autotest('Maintenance', 'historique des jobs : filtres, tri ; un job fait n’est modifiable que par capitaine et administrateur', async ()=>{
+  const adm = addDoc('users','users',{nom:'A', role:'admin'}), mat = addDoc('users','users',{nom:'M', role:'equipage'}), tech = addDoc('users','users',{nom:'T', role:'technique'});
+  prefStore.setItem('sw_profile_id', adm);
+  const eq = addDoc('equipment','equipment',{vessel:'men-du', name:'Pompe', categorie:'Moteur'});
+  const tid = addDoc('tasks','tasks',{vessel:'men-du', task:'Vidange', equipmentId:eq, unit:'date', cycleDays:30, lastDate:'2026-01-10', nextDate:'2026-02-09', completions:[{id:'c1', date:'2026-01-10', by:'X', commentaire:''}]});
+  const jid = addDoc('jobs','jobs',{vessel:'viga', titre:'Peinture', statut:'Terminé', dateRealisation:'2026-03-01'});
+  state._jh = null; render(); state.route = '#/maintenance-historique'; renderContent();
+  const rows = ()=>$$('#content-slot [data-fk=jh-table] tbody tr').length;
+  expect.equal(rows(), 3);
+  expect.equal($('#content-slot tbody tr').textContent.includes('Peinture'), true, 'date décroissante');
+  expect.ok($('#content-slot tbody tr').textContent.includes('Fait'), 'statut affiché Fait');
+  state._jh.ponctuels = false; renderContent(); expect.equal(rows(), 2, 'récurrents seuls');
+  state._jh.ponctuels = true; state._jh.groupe = 'Moteur'; renderContent(); expect.equal(rows(), 2, 'groupe');
+  state._jh.groupe = ''; state._jh.vessels = ['viga']; renderContent(); expect.equal(rows(), 1, 'navire');
+  state._jh.vessels = VESSELS.map(v=>v.key); renderContent();
+  $('#content-slot [data-fk=tri-titre]').click(); expect.ok($('#content-slot tbody tr').textContent.includes('Peinture'), 'tri par job');
+  const t = state.tasks.find(x=>x.id===tid);
+  openCompletionModal(t, t.completions[0]);
+  fillModal({date:'2026-01-20', commentaire:'Corrigé'}); confirmTopModal(); await tick(30);
+  expect.equal(t.completions[0].date, '2026-01-20'); expect.equal(t.completions[0].commentaire, 'Corrigé');
+  expect.equal(t.lastDate, '2026-01-20'); expect.equal(t.nextDate, addDays('2026-01-20', 30), 'échéance recalculée');
+  prefStore.setItem('sw_profile_id', tech); expect.ok(!canEditDoneJob(), 'service technique : lecture');
+  openJobModal(state.jobs.find(x=>x.id===jid)); expect.ok(!$('.modal .btn-primary[type=submit]') || $('.modal [name=titre]').disabled, 'job fait en lecture'); closeAllModals();
+  prefStore.setItem('sw_profile_id', mat); expect.ok(!canEditDoneJob());
+  state.route = '#/autotest';
+});
+autotest('Notifications', 'service technique contacté, lecture par personne, délai d’apparition par type', async ()=>{
+  const tech = addDoc('users','users',{nom:'T', role:'technique'}), adm = addDoc('users','users',{nom:'A', role:'admin'}), mat = addDoc('users','users',{nom:'M', role:'equipage'});
+  prefStore.setItem('sw_profile_id', adm);
+  testRestores.push(()=>prefStore.removeItem('sw_notif_delays'));
+  notifyRole('technique', 'Service technique contacté : panne', '', null, 'viga');
+  expect.equal(unreadNotifications().length, 1);
+  prefStore.setItem('sw_profile_id', mat); expect.equal(myNotifications().length, 0, 'pas pour l’équipage');
+  prefStore.setItem('sw_profile_id', tech); expect.equal(unreadNotifications().length, 1);
+  markNotificationRead(state.notifications[0]); expect.equal(unreadNotifications().length, 0, 'lu pour le technicien');
+  prefStore.setItem('sw_profile_id', adm); expect.equal(unreadNotifications().length, 1, 'toujours non lu pour l’administrateur');
+  const dd = addDoc('documents','documents',{titre:'Manuel SMS', type:DOC_TYPES[0], dateRevision:addDays(todayISO(), 40)});
+  const has = ()=>reminderItems().some(i=>i.key==='docrev:'+dd);
+  expect.ok(!has(), 'trop loin avec le délai par défaut');
+  prefStore.setItem('sw_notif_delays', JSON.stringify({documents:60}));
+  expect.ok(has(), 'délai porté à 60 jours');
+  render(); state.route = '#/notifications'; renderContent();
+  expect.ok($('#content-slot [data-fk=notif-messages]').textContent.includes('panne') && $('#content-slot [data-fk=delai-documents]').value==='60');
+  state.route = '#/autotest';
+});
+autotest('Équipage', 'certificats et feuilles de notes : ce que chacun voit', async ()=>{
+  const a = addDoc('crew','crew',{nom:'Ana'}), b = addDoc('crew','crew',{nom:'Bob'});
+  const matA = addDoc('users','users',{nom:'Ana', role:'equipage', crewId:a}), tech = addDoc('users','users',{nom:'T', role:'technique'}), cap = addDoc('users','users',{nom:'C', role:'capitaine'});
+  addDoc('users','users',{nom:'Adm', role:'admin'});
+  addDoc('crewDocs','crewDocs',{crewId:a, kind:'certificat', type:'Navigation', nom:'Brevet A', dateExpiration:addDays(todayISO(),5)});
+  addDoc('crewDocs','crewDocs',{crewId:b, kind:'certificat', type:'Navigation', nom:'Brevet B', dateExpiration:addDays(todayISO(),5)});
+  addDoc('crewDocs','crewDocs',{crewId:a, kind:'note', nom:'Notes A', date:todayISO()});
+  addDoc('crewDocs','crewDocs',{crewId:b, kind:'note', nom:'Notes B', date:todayISO()});
+  state._cd = null; prefStore.setItem('sw_profile_id', matA); render(); state.route = '#/certificats-equipage'; renderContent();
+  const tx = ()=>$('#content-slot').textContent;
+  expect.ok(tx().includes('Brevet A') && !tx().includes('Brevet B'), 'le marin voit ses certificats seulement');
+  expect.ok(reminderItems().some(i=>i.label.includes('Brevet A')) && !reminderItems().some(i=>i.label.includes('Brevet B')), 'rappels limités à ses certificats');
+  state._cd.tab = 'note'; renderContent(); expect.ok(tx().includes('Notes A') && !tx().includes('Notes B'), 'ses notes seulement');
+  expect.ok(canEditCrewDocs(a,'note') && !canEditCrewDocs(b,'note'));
+  prefStore.setItem('sw_profile_id', cap); state._cd = {tab:'note', crew:''}; renderContent(); expect.ok(tx().includes('Notes A') && tx().includes('Notes B'), 'capitaine : toutes les notes');
+  prefStore.setItem('sw_profile_id', tech); state._cd = {tab:'note', crew:''}; renderContent();
+  expect.ok(!tx().includes('Notes A') && tx().includes('Brevet A'), 'service technique : certificats, pas les notes');
+  state.route = '#/autotest';
+});
+autotest('Copie', 'dupliquer vers d’autres navires : conflits détectés et ignorés par défaut', async ()=>{
+  addDoc('users','users',{nom:'Adm', role:'admin'}); prefStore.setItem('sw_profile_id', state.users[0].id);
+  const j = addDoc('jobs','jobs',{vessel:'men-du', titre:'Graissage grue', statut:'À faire'});
+  addDoc('jobs','jobs',{vessel:'viga', titre:'graissage  GRUE', statut:'À faire'});
+  const rec = state.jobs.find(x=>x.id===j);
+  expect.equal(copyConflicts('jobs', [rec], ['viga','quehan']).length, 1);
+  expect.equal(copyRecordsToVessels('jobs', [rec], ['viga','quehan'], {skipConflicts:true}), 1, 'seul le navire sans conflit');
+  expect.equal(state.jobs.filter(x=>x.vessel==='viga').length, 1); expect.equal(state.jobs.filter(x=>x.vessel==='quehan').length, 1);
+  openCopyToVesselModal('jobs', 'men-du', [j]);
+  $('.modal [data-fk=cible-viga]').click();
+  expect.ok($('.modal [data-fk=copie-conflits]').textContent.includes('existe déjà'), 'conflit affiché');
+  closeAllModals();
+});
+autotest('Heures', 'saisie : la personne et l’administrateur ; capitaine en lecture ; frais réservés à l’administrateur', async ()=>{
+  const key = hoursFixture();
+  const adm = addDoc('users','users',{nom:'A', role:'admin'}), cap = addDoc('users','users',{nom:'C', role:'capitaine'});
+  const mat = addDoc('users','users',{nom:'T', role:'equipage', crewId:key.slice(5)});
+  prefStore.setItem('sw_profile_id', cap);
+  expect.ok(!canEditHoursOf(key) && visibleHoursPeople().some(p=>p.key===key), 'capitaine : voit sans modifier');
+  prefStore.setItem('sw_profile_id', mat); expect.ok(canEditHoursOf(key));
+  openWorkDayModal(key, todayISO()); expect.ok(!$('.modal [name=frais]'), 'pas de frais pour le marin'); closeAllModals();
+  prefStore.setItem('sw_profile_id', adm); expect.ok(canEditHoursOf(key));
+  openWorkDayModal(key, todayISO());
+  $('.modal [data-fk=periode-debut-0]').value = '07:00'; $('.modal [data-fk=periode-debut-0]').dispatchEvent(new Event('input'));
+  $('.modal [data-fk=periode-fin-0]').value = '15:00'; $('.modal [data-fk=periode-fin-0]').dispatchEvent(new Event('input'));
+  fillModal({frais:'42.5', fraisNote:'Taxi'}); confirmTopModal(); await tick(30);
+  expect.equal(Number(workRecord(key, todayISO()).frais), 42.5);
+  prefStore.setItem('sw_profile_id', mat);
+  saveWorkDay(key, todayISO(), [{debut:'08:00', fin:'16:00'}], {notes:'x'});
+  expect.equal(Number(workRecord(key, todayISO()).frais), 42.5, 'le marin ne perd pas les frais en saisissant');
+});
+autotest('Carburant', 'relevés de caisses : totaux gasoil et huile, soutage compté, consommation sur le total', async ()=>{
+  addDoc('users','users',{nom:'A', role:'admin'}); prefStore.setItem('sw_profile_id', state.users[0].id);
+  const niv = (bd, td)=>({'go-bd':bd, 'go-td':td, 'hu-bd':10, 'hu-td':10, 'hu-aux':5, 'res-bidon':20});
+  addDoc('fuel','fuel',{vessel:'viga', date:'2026-05-01', type:FUEL_LEVELS, niveaux:niv(1000, 500)});
+  addDoc('fuel','fuel',{vessel:'viga', date:'2026-05-03', lignes:[{caisse:'go-bd', quantite:200}]});
+  addDoc('fuel','fuel',{vessel:'viga', date:'2026-05-05', type:FUEL_LEVELS, niveaux:niv(600, 900)});
+  const rows = tankRows('viga');
+  expect.equal(rows[1].go, 1500); expect.equal(rows[1].oil, 45, 'huile, réserve comprise');
+  expect.equal(rows[1].goConso, 200, 'report entre caisses neutre : 1500 + 200 − 1500');
+  expect.ok(!fuelEntries().some(e=>e.type===FUEL_LEVELS), 'le relevé n’est pas une entrée');
+  state.activeVessel = 'viga'; render(); state.route = '#/carburant'; renderContent();
+  expect.ok($('#content-slot [data-fk=caisses]').textContent.includes('Bidon de réserve'));
+  $('#content-slot [data-fk=releve-caisses]').click();
+  expect.equal($('.modal [name="n-go-bd"]').value, '600', 'reprend le dernier relevé');
+  $('.modal [name="n-go-bd"]').value = ''; confirmTopModal(); await tick(10);
+  expect.equal($$('.modal').length, 1, 'niveau obligatoire'); closeAllModals();
+  state.route = '#/autotest';
+});
+autotest('Documentation', 'types ajoutés par l’administrateur, date de révision', async ()=>{
+  const adm = addDoc('users','users',{nom:'A', role:'admin'}), cap = addDoc('users','users',{nom:'C', role:'capitaine'});
+  prefStore.setItem('sw_profile_id', adm); render(); state.route = '#/documentation'; renderContent();
+  $('#content-slot [data-fk=doc-types]').click();
+  $('.modal [data-fk=nouveau-type-doc]').value = 'Rapport de classe'; $('.modal [data-fk=ajouter-type-doc]').click();
+  confirmTopModal(); await tick(30);
+  expect.ok(docTypes().includes('Rapport de classe'));
+  openDocumentModal(); expect.ok($('.modal [name=dateRevision]') && [...$('.modal [name=type]').options].some(o=>o.value==='Rapport de classe')); closeAllModals();
+  prefStore.setItem('sw_profile_id', cap); renderContent(); expect.ok(!$('#content-slot [data-fk=doc-types]'), 'bouton réservé à l’administrateur');
+  state.route = '#/autotest';
+});
+autotest('Arrêts techniques', 'travaux détaillés, facture pour plusieurs travaux, demande de facture', async ()=>{
+  addDoc('users','users',{nom:'A', role:'admin'}); prefStore.setItem('sw_profile_id', state.users[0].id);
+  const mails = []; patch(window, 'openMail', (to, s, b)=>mails.push(s+b));
+  const id = addDoc('drydocks','drydocks',{vessel:'viga', titre:'Carénage', debut:'2026-05-01', travaux:[{id:'w1', libelle:'Coque', prestataire:'Chantier A', cout:100}, {id:'w2', libelle:'Hélice', prestataire:'Chantier A', cout:50}]});
+  openDrydockModal(state.drydocks.find(x=>x.id===id));
+  $('.modal [data-fk=detail-travail-w1]').click();
+  const top = ()=>$$('.modal').pop(), fillTop = o=>Object.entries(o).forEach(([k,v])=>{ top().querySelector('[name="'+k+'"]').value = v; });
+  fillTop({statut:'Fait', description:'Grattage'}); confirmTopModal(); await tick(20);
+  $('.modal [data-fk=demander-facture-chantier-a]').click();
+  expect.ok(mails.length===1 && mails[0].includes('Coque') && mails[0].includes('Hélice'), 'demande groupée par prestataire');
+  $('.modal [data-fk=ajouter-facture]').click();
+  fillTop({prestataire:'Chantier A', numero:'F12', montant:'150'}); top().querySelector('[data-fk=fac-w-w1]').click(); top().querySelector('[data-fk=fac-w-w2]').click();
+  confirmTopModal(); await tick(20);
+  confirmTopModal(); await tick(30);
+  const d = state.drydocks.find(x=>x.id===id);
+  expect.equal(d.travaux[0].statut, 'Fait'); expect.equal(d.travaux[0].cloturePar, 'Testeur', 'clôturé par');
+  expect.equal(d.factures[0].travauxIds.length, 2, 'une facture, deux travaux');
+});
+autotest('Éléments', 'format 12 : arborescence par défaut sur chaque navire, sans doublon', ()=>{
+  const obj = parseSnapshot(fileText({version:11, equipment:[{id:'x', vessel:'viga', name:'moteur babord', categorie:'Propulsion'}]}));
+  expect.equal(obj.equipment.filter(e=>e.vessel==='viga').length, 10, 'élément existant non doublé');
+  expect.equal(obj.equipment.filter(e=>e.vessel==='men-du').length, 10);
+  expect.equal(obj.equipment.find(e=>e.vessel==='men-du' && e.name==='Grue').categorie, 'Auxiliaire');
+  expect.equal(obj.equipment.find(e=>e.id==='x').categorie, 'Propulsion', 'catégorie existante conservée');
+});
+autotest('Éléments', 'catégories : ajout, renommage reporté sur les fiches, retrait impossible si utilisée', async ()=>{
+  addDoc('users','users',{nom:'A', role:'admin'}); prefStore.setItem('sw_profile_id', state.users[0].id);
+  expect.equal(equipmentCats().join('|'), 'Moteurs|Propulsion|Auxiliaire|Sécurité');
+  const eq = addDoc('equipment','equipment',{vessel:'viga', name:'Moteur bâbord', categorie:'Moteurs'});
+  const j = addDoc('jobs','jobs',{vessel:'viga', titre:'Contrôle', equipCat:'Moteurs'});
+  state.activeVessel = 'viga'; render(); state.route = '#/equipements'; renderContent();
+  expect.ok($('#content-slot [data-fk=categorie-moteurs] [data-fk="ligne-'+eq+'"]'), 'élément rangé dans sa catégorie');
+  expect.ok($('#content-slot [data-fk=categorie-securite]'), 'catégorie vide affichée');
+  $('#content-slot [data-fk=elements-categories]').click();
+  expect.ok($('.modal [data-fk=cat-retirer-0]').disabled, 'catégorie utilisée');
+  const n = $('.modal [data-fk=cat-nom-0]'); n.value = 'Motorisation'; n.dispatchEvent(new Event('input'));
+  $('.modal [data-fk=nouvelle-cat]').value = 'Électricité'; $('.modal [data-fk=ajouter-cat]').click();
+  confirmTopModal(); await tick(30);
+  expect.equal(state.equipment[0].categorie, 'Motorisation'); expect.equal(state.jobs.find(x=>x.id===j).equipCat, 'Motorisation');
+  expect.equal(equipmentCats().join('|'), 'Motorisation|Propulsion|Auxiliaire|Sécurité|Électricité');
+  state.route = '#/autotest';
+});
+autotest('Éléments', 'historique d’une catégorie ou d’un élément : jobs, défauts, pièces, consommation, commandes', async ()=>{
+  addDoc('users','users',{nom:'A', role:'admin'}); prefStore.setItem('sw_profile_id', state.users[0].id);
+  const eq = addDoc('equipment','equipment',{vessel:'viga', name:'Moteur bâbord', categorie:'Moteurs'});
+  const eq2 = addDoc('equipment','equipment',{vessel:'viga', name:'Grue', categorie:'Auxiliaire'});
+  const job = addDoc('jobs','jobs',{vessel:'viga', titre:'Vidange', equipmentId:eq, statut:'Terminé'});
+  addDoc('jobs','jobs',{vessel:'viga', titre:'Contrôle général', equipCat:'Moteurs', statut:'À faire'});
+  addDoc('jobs','jobs',{vessel:'viga', titre:'Graissage', equipmentId:eq2, statut:'À faire'});
+  addDoc('nonconformities','nonconformities',{vessel:'viga', titre:'Fuite', statut:'Ouverte', equipmentId:eq, dateConstat:'2026-04-01'});
+  addDoc('inventory','inventory',{vessel:'viga', designation:'Filtre', quantite:3, equipmentId:eq, mouvements:[{id:'m1', date:'2026-04-02', qty:-1, motif:'Sortie'}]});
+  addDoc('inventory','inventory',{vessel:'viga', designation:'Joint', quantite:3, mouvements:[{id:'m2', date:'2026-04-03', qty:-2, jobId:job, motif:'Job'}, {id:'m3', date:'2026-04-04', qty:5, motif:'Sans lien'}]});
+  const it = state.inventory[0].id;
+  addDoc('orders','orders',{vessel:'viga', designation:'Filtre', inventoryId:it, statut:'Reçu'});
+  addDoc('orders','orders',{vessel:'', designation:'Courroie', equipCat:'Moteurs', statut:'À commander'});
+  addDoc('orders','orders',{vessel:'viga', designation:'Peinture', statut:'À commander'});
+  const types = f=>jobHistoryRows({...jobHistoryDefaults(), ...f}).map(r=>r.type+':'+r.titre).sort().join('|');
+  const el1 = types({element:eq});
+  expect.equal(el1, 'Commande:Filtre|Consommation:Filtre|Consommation:Joint|Défaut:Fuite|Pièce:Filtre|Ponctuel:Vidange', 'élément');
+  const cat = types({groupe:'Moteurs'});
+  expect.ok(cat.includes('Ponctuel:Contrôle général') && cat.includes('Commande:Courroie') && cat.includes('Ponctuel:Vidange') && !cat.includes('Graissage'), 'catégorie : '+cat);
+  expect.ok(!cat.includes('Peinture') && !cat.includes('Entrée de stock:Joint'), 'sans lien écarté');
+  state._jh = {...jobHistoryDefaults(), groupe:'Moteurs'}; render(); state.route = '#/maintenance-historique'; renderContent();
+  expect.ok($('#content-slot [data-fk=jh-table]').textContent.includes('Moteurs (catégorie)'));
+  state.route = '#/autotest';
+});
+autotest('Éléments', 'historique : carburant et huile par compteur, consommation des caisses au niveau de la catégorie', ()=>{
+  const obj = parseSnapshot(fileText({version:11}));
+  expect.equal(obj.equipment.find(e=>e.vessel==='viga' && e.name==='Moteur tribord').meter, 'mp2', 'compteur par défaut');
+  expect.ok(obj.equipment.some(e=>e.name==='LiLAA bâbord') && obj.equipment.some(e=>e.name==='LiLAA tribord'), 'nom LiLAA');
+  const m1 = addDoc('equipment','equipment',{vessel:'viga', name:'Moteur bâbord', categorie:'Moteurs', meter:'mp1'});
+  const m2 = addDoc('equipment','equipment',{vessel:'viga', name:'Moteur tribord', categorie:'Moteurs', meter:'mp2'});
+  addDoc('fuel','fuel',{vessel:'viga', date:'2026-05-02', type:'Huile moteur', quantite:12, unite:'L', compteur:'mp1'});
+  const niv = (bd, td)=>({'go-bd':bd, 'go-td':td, 'hu-bd':10, 'hu-td':10, 'hu-aux':5, 'res-bidon':20});
+  addDoc('fuel','fuel',{vessel:'viga', date:'2026-05-01', type:FUEL_LEVELS, niveaux:niv(1000, 500)});
+  addDoc('fuel','fuel',{vessel:'viga', date:'2026-05-05', type:FUEL_LEVELS, niveaux:niv(600, 700)});
+  const rows = f=>jobHistoryRows({...jobHistoryDefaults(), ...f}).filter(r=>r.type.startsWith('Carburant') || r.type==='Consommation carburant');
+  expect.equal(rows({element:m1}).length, 1, 'appoint rattaché au moteur bâbord');
+  expect.equal(rows({element:m2}).length, 0, 'rien sur le moteur tribord');
+  const cat = rows({groupe:'Moteurs'});
+  expect.ok(cat.some(r=>r.titre.startsWith('Gasoil') && r.note.startsWith('200')), 'consommation gasoil sur le total');
+  expect.equal(rows({groupe:'Sécurité'}).length, 0, 'catégorie sans compteur');
+  expect.equal(rows({element:m1, }).filter(r=>r.type==='Consommation carburant').length, 0, 'non attribuée à un seul moteur');
+});
+autotest('Éléments', 'lien à une catégorie depuis un job, une pièce, un défaut ; catégorie et élément exclusifs', async ()=>{
+  addDoc('users','users',{nom:'A', role:'admin'}); prefStore.setItem('sw_profile_id', state.users[0].id);
+  const eq = addDoc('equipment','equipment',{vessel:'viga', name:'Grue', categorie:'Auxiliaire'});
+  openJobModal(null, {vessel:'viga'});
+  fillModal({titre:'Contrôle', equipmentId:'cat:Auxiliaire'}); confirmTopModal(); await tick(30);
+  const j = state.jobs[0]; expect.ok(j.equipCat==='Auxiliaire' && !j.equipmentId, 'job lié à la catégorie');
+  openJobModal(j); expect.equal($('.modal [name=equipmentId]').value, 'cat:Auxiliaire', 'relu');
+  fillModal({equipmentId:eq}); confirmTopModal(); await tick(30);
+  expect.ok(state.jobs[0].equipmentId===eq && !state.jobs[0].equipCat, 'remplacé par l’élément');
+  openInventoryModal(null, {vessel:'viga', loc:'viga'});
+  fillModal({designation:'Élingue', nature:'piece', equipmentId:'cat:Auxiliaire'}); confirmTopModal(); await tick(30);
+  expect.equal(state.inventory[0].equipCat, 'Auxiliaire', 'pièce');
+  expect.ok(matchesEquipment({equipmentId:eq}, 'cat:Auxiliaire') && matchesEquipment({equipCat:'Auxiliaire'}, 'cat:Auxiliaire') && !matchesEquipment({equipCat:'Auxiliaire'}, '__aucun'));
+});
 autotest('Paramètres', 'version affichée avec sa date, recherche de mise à jour (version publiée plus récente)', async ()=>{
   expect.ok(appBuildInfo('20261024-1203-ff54f95a493b').label==='24/10/2026 à 12h03', 'date lue dans la version');
-  expect.equal(appBuildInfo('20261024-1720-a77dafcd1482'), null, 'fichier non publié');
+  expect.equal(appBuildInfo('20261108-1653-5ac8c9b54a68'), null, 'fichier non publié');
   render(); state.route = '#/parametres'; renderContent();
   const card = $('#content-slot [data-fk=carte-version]');
   expect.ok(card && $('[data-fk=version-app]', card).textContent.length>0, 'carte Version et mises à jour');
