@@ -261,6 +261,9 @@ tr.ord-annule>td{color:var(--text-soft);}
 .company-tabs>.tabs{flex:0 0 auto;border-bottom:0;margin-bottom:0;}
 .tab.tab-company.active{border-color:var(--navy-500);}
 .nc-jobs .settings-row{padding:6px 0;}
+.cam-overlay{position:fixed;inset:0;z-index:20000;background:#000;display:flex;flex-direction:column;}
+.cam-video{flex:1;min-height:0;width:100%;object-fit:contain;}
+.cam-actions{display:flex;gap:12px;justify-content:center;padding:14px 16px calc(14px + env(safe-area-inset-bottom));background:#000;}
 .th-sort{all:unset;cursor:pointer;font:inherit;color:inherit;text-transform:inherit;letter-spacing:inherit;}
 .th-sort.active,.th-sort:hover{color:var(--text);}
 .th-sort:focus-visible{outline:2px solid var(--focus);outline-offset:2px;}
@@ -5411,6 +5414,44 @@ async function openAttachmentViewer(a){
   });
 }
 
+/* Caméra intégrée à la page : ouvrir l'appareil photo du système met l'application en arrière-plan,
+   et les tablettes à court de mémoire la ferment (la fiche en cours est perdue). */
+const inAppCamera = {
+  available: ()=>!!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
+  open: ()=>navigator.mediaDevices.getUserMedia({audio:false, video:{facingMode:{ideal:'environment'}, width:{ideal:1920}, height:{ideal:1080}}}),
+  frame: video=>new Promise((resolve, reject)=>{
+    const c = document.createElement('canvas');
+    c.width = video.videoWidth; c.height = video.videoHeight;
+    if(!c.width){ reject(new Error('image pas encore disponible')); return; }
+    c.getContext('2d').drawImage(video, 0, 0);
+    c.toBlob(b=>b ? resolve(new File([b], 'photo-'+todayISO()+'-'+Date.now()+'.jpg', {type:'image/jpeg'})) : reject(new Error('capture impossible')), 'image/jpeg', 0.9);
+  }),
+};
+async function takePhoto(onFile, fallback){
+  if(!inAppCamera.available()){ fallback(); return; }
+  let stream;
+  try{ stream = await inAppCamera.open(); }
+  catch(e){
+    if(e && (e.name==='NotAllowedError' || e.name==='SecurityError')) toast('Caméra refusée : autorisez-la dans les réglages du navigateur, ou utilisez « Importer un fichier ».', 'error');
+    else fallback();
+    return;
+  }
+  const video = el('video',{class:'cam-video', autoplay:'', playsinline:'', muted:'', 'aria-label':'Image de la caméra'});
+  video.muted = true; video.srcObject = stream;
+  const close = ()=>{ stream.getTracks().forEach(t=>t.stop()); document.removeEventListener('keydown', onKey, true); box.remove(); };
+  const onKey = e=>{ if(e.key==='Escape'){ e.stopPropagation(); close(); } };
+  const shoot = el('button',{class:'btn btn-primary', type:'button', 'data-fk':'camera-prendre', onclick:async ()=>{
+    shoot.disabled = true;
+    try{ const f = await inAppCamera.frame(video); close(); onFile(f); }
+    catch(err){ shoot.disabled = false; toast('Patientez, la caméra démarre…'); }
+  }}, 'Prendre la photo');
+  const box = el('div',{class:'cam-overlay', role:'dialog', 'aria-modal':'true', 'aria-label':'Prendre une photo', 'data-fk':'camera'}, video,
+    el('div',{class:'cam-actions'}, el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'camera-annuler', onclick:close}, 'Annuler'), shoot));
+  document.addEventListener('keydown', onKey, true);
+  document.body.appendChild(box);
+  video.play().catch(()=>{});
+  shoot.focus();
+}
 function attachmentsEditor(existing, opts){
   opts = opts || {};
   const list = (existing||[]).map(a=>({...a}));
@@ -5484,7 +5525,7 @@ function attachmentsEditor(existing, opts){
     const camInput = el('input',{type:'file', accept:'image/*', capture:'environment', style:'display:none;', 'aria-hidden':'true', tabindex:'-1', onchange:(e)=>{ uploadFile(e.target.files[0]); e.target.value=''; }});
     wrap.appendChild(el('div',{style:'display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;'},
       el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>fileInput.click()}, el('span',{html:iconPaperclip()}),'Importer un fichier'),
-      el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>camInput.click()}, el('span',{html:iconCamera()}),'Prendre une photo'),
+      el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'prendre-photo', onclick:()=>takePhoto(uploadFile, ()=>camInput.click())}, el('span',{html:iconCamera()}),'Prendre une photo'),
       el('span',{class:'hint', style:'margin:0;align-self:center;'}, 'ou collez une capture d’écran (Ctrl+V)')
     ));
     // capture d'écran collée : va dans le premier éditeur de la fenêtre ouverte au-dessus
@@ -12375,7 +12416,7 @@ function exportSpecPdf(spec){ printSheet(buildExportSheet(spec)); }
    APP_BUILD est inscrit à la publication (tools/preparer-deploiement.ps1) :
    « aaaammjj-hhmm-empreinte ». Fichier ouvert en local : version non numérotée.
    La recherche de mise à jour lit version.json sur le site publié. */
-const APP_BUILD = '20261108-1850-a73be0e2196b';
+const APP_BUILD = '20261108-1901-e278a144b5ad';
 function appBuildInfo(build){
   const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(?:-(\w+))?/.exec(build||'');
   return m ? {build, date:m[1]+'-'+m[2]+'-'+m[3], time:m[4]+':'+m[5], label:m[3]+'/'+m[2]+'/'+m[1]+' à '+m[4]+'h'+m[5]} : null;
@@ -17120,9 +17161,30 @@ autotest('Éléments', 'lien à une catégorie depuis un job, une pièce, un dé
   expect.equal(state.inventory[0].equipCat, 'Auxiliaire', 'pièce');
   expect.ok(matchesEquipment({equipmentId:eq}, 'cat:Auxiliaire') && matchesEquipment({equipCat:'Auxiliaire'}, 'cat:Auxiliaire') && !matchesEquipment({equipCat:'Auxiliaire'}, '__aucun'));
 });
+autotest('Pièces jointes', 'photo prise dans la fiche, sans quitter l’application ; repli sur l’appareil photo du système', async ()=>{
+  addDoc('users','users',{nom:'A', role:'admin'}); prefStore.setItem('sw_profile_id', state.users[0].id);
+  const canvas = document.createElement('canvas'); canvas.width = 20; canvas.height = 20; canvas.getContext('2d').fillRect(0, 0, 20, 20);
+  const stream = canvas.captureStream(5);
+  const blob = await new Promise(r=>canvas.toBlob(r, 'image/jpeg'));
+  patch(inAppCamera, 'available', ()=>true); patch(inAppCamera, 'open', async ()=>stream);
+  patch(inAppCamera, 'frame', async ()=>new File([blob], 'photo-test.jpg', {type:'image/jpeg'}));
+  openJobModal(null, {vessel:'viga'});
+  $('.modal [data-fk=prendre-photo]').click(); await tick(20);
+  expect.ok($('[data-fk=camera]'), 'caméra affichée dans la page');
+  expect.equal($$('.modal').length, 1, 'la fiche reste ouverte dessous');
+  $('[data-fk=camera-prendre]').click(); await tick(120);
+  expect.ok(!$('[data-fk=camera]'), 'caméra fermée');
+  expect.ok(stream.getTracks().every(t=>t.readyState==='ended'), 'caméra libérée');
+  expect.ok($('.modal .attach-list').textContent.includes('photo-test'), 'photo ajoutée à la fiche');
+  patch(inAppCamera, 'open', async ()=>{ throw Object.assign(new Error('x'), {name:'NotFoundError'}); });
+  let system = 0; $('.modal input[capture]').click = ()=>{ system++; };
+  $('.modal [data-fk=prendre-photo]').click(); await tick(20);
+  expect.equal(system, 1, 'sans caméra intégrée : appareil photo du système');
+  closeAllModals();
+});
 autotest('Paramètres', 'version affichée avec sa date, recherche de mise à jour (version publiée plus récente)', async ()=>{
   expect.ok(appBuildInfo('20261024-1203-ff54f95a493b').label==='24/10/2026 à 12h03', 'date lue dans la version');
-  expect.equal(appBuildInfo('20261108-1850-a73be0e2196b'), null, 'fichier non publié');
+  expect.equal(appBuildInfo('20261108-1901-e278a144b5ad'), null, 'fichier non publié');
   render(); state.route = '#/parametres'; renderContent();
   const card = $('#content-slot [data-fk=carte-version]');
   expect.ok(card && $('[data-fk=version-app]', card).textContent.length>0, 'carte Version et mises à jour');
