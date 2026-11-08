@@ -264,6 +264,9 @@ tr.ord-annule>td{color:var(--text-soft);}
 .cam-overlay{position:fixed;inset:0;z-index:20000;background:#000;display:flex;flex-direction:column;}
 .cam-video{flex:1;min-height:0;width:100%;object-fit:contain;}
 .cam-actions{display:flex;gap:12px;justify-content:center;padding:14px 16px calc(14px + env(safe-area-inset-bottom));background:#000;}
+a.user-chip{color:inherit;text-decoration:none;cursor:pointer;border-radius:8px;}
+a.user-chip:hover{background:rgba(255,255,255,.08);}
+a.user-chip:focus-visible{outline:2px solid var(--focus);outline-offset:2px;}
 .th-sort{all:unset;cursor:pointer;font:inherit;color:inherit;text-transform:inherit;letter-spacing:inherit;}
 .th-sort.active,.th-sort:hover{color:var(--text);}
 .th-sort:focus-visible{outline:2px solid var(--focus);outline-offset:2px;}
@@ -2579,7 +2582,7 @@ function isOnline(){ return navigator.onLine !== false; }
 const RELAY_API = {fetch: (url, opts)=>fetch(url, opts)}; // remplaçable par les autotests
 /* version du relais attendue par cette application (RELAY_VERSION dans relais/Code.gs) ;
    un relais plus ancien fonctionne, mais sans les dernières fonctions (ex. revoir les liens) */
-const RELAY_EXPECTED = 10;
+const RELAY_EXPECTED = 11;
 
 function relayVersion(){ return isRelay() ? Number(state.driveFile.relay.version)||1 : null; }
 function relayOutdated(){ return isRelay() && relayVersion() < RELAY_EXPECTED; }
@@ -2632,9 +2635,54 @@ function askRelayExecUrl(){
   });
 }
 /* rejoindre les données d'un relais avec un lien d'invitation */
+/* changer d'utilisateur : les comptes sont créés par l'administrateur ; une fois connecté, le code PIN du compte
+   suffit. Le code est vérifié par le relais (empreinte, essais limités) : rien n'est gardé sur l'appareil. */
+function pinField(label, name, hint){
+  const w = field(label, name, 'password', null, '', hint||null), i = w.querySelector('input');
+  i.setAttribute('inputmode', 'numeric'); i.setAttribute('autocomplete', 'off'); i.setAttribute('maxlength', '8');
+  return w;
+}
+function openSetPinModal(name, isAdmin, ref){
+  const min = isAdmin ? 6 : 4;
+  openModal({title:'Code PIN de '+name, submitLabel:'Enregistrer',
+    body:el('div',{}, pinField('Nouveau code PIN','pin', min+' à 8 chiffres'), pinField('Confirmer le code','pin2')),
+    validate: d=>!new RegExp('^\\d{'+min+',8}$').test(d.pin) ? 'Le code doit contenir de '+min+' à 8 chiffres.' : d.pin!==d.pin2 ? 'Les deux codes sont différents.' : null,
+    onSubmit: async d=>{ await relayCall('setPin', ref ? {ref, pin:d.pin} : {pin:d.pin}); state._relayAccounts = null; state._relayLinks = null; toast('Code PIN enregistré', 'success'); }});
+}
+function openPinLoginModal(a, name){
+  openModal({title:'Passer sur le compte de '+name, submitLabel:'Valider', body:el('div',{}, pinField('Code PIN','unlock')),
+    validate: d=>d.unlock ? null : 'Saisissez le code PIN.',
+    onSubmit: async d=>{ const url = state.driveFile.relay.url, res = await relayCall('pinLogin', {ref:a.ref, pin:d.unlock}); setTimeout(()=>relayJoin({url, token:res.token}), 0); }});
+}
+function loadRelayAccounts(){
+  return relayCall('accounts', {}).then(r=>{ state._relayAccounts = r.accounts||[]; }).catch(()=>{ state._relayAccounts = []; }).then(()=>{ if(state.route.startsWith('#/profils')) renderContent(); });
+}
+/* même relais, autre lien : mêmes données, seule l'identité change */
+async function relaySwitchAccount(link){
+  const cur = state.driveFile.relay;
+  if(cur.token===link.token){ render(); toast('Déjà connecté avec ce lien'); return true; }
+  if(state.dirty){
+    await driveSyncNow(false);
+    if(state.dirty){ toast('Saisies non envoyées : synchronisez avant de changer d’utilisateur.', 'error'); return false; }
+  }
+  let info;
+  try{ info = await relayCall('ping', {}, {url:link.url, token:link.token}); }
+  catch(e){ toast(e.message || 'Relais injoignable.', 'error'); return false; }
+  Object.assign(cur, {token:link.token, name:info.user.name||'', role:info.user.role||'', profileId:info.user.profileId||'', admin:!!info.user.admin, version:Number(info.relayVersion)||1});
+  state.driveFile.canEdit = info.canEdit!==false; state.driveReadOnly = info.canEdit===false;
+  state.driveUser = {name:info.user.name||'', email:''};
+  state._relayLinks = null; state._relayAccounts = null;
+  driveSaveConnection();
+  applyIdentity();
+  if(!currentProfile() && info.user.name) state.me.name = info.user.name;
+  render();
+  toast('Utilisateur : '+(state.me.name||info.user.name||'sans nom'), 'success');
+  return true;
+}
 async function relayJoin(link){
   if(!isOnline()){ toast('Connexion impossible hors ligne : ouvrez le lien avec du réseau.'); return false; }
   if(/\/dev$/.test(link.url)){ const exec = await askRelayExecUrl(); if(!exec) return false; link = {...link, url:exec}; }
+  if(isRelay() && state.driveFile.relay.url===link.url) return relaySwitchAccount(link);
 
   const r = {url:link.url, token:link.token};
   let info, remote, rev;
@@ -2667,6 +2715,7 @@ async function relayJoin(link){
   state.fileRevision = Number(remote.revision)||0;
   driveSaveConnection(); markSynced(remote.savedBy);
   persistLocalCache();
+  applyIdentity();
   render();
   toast('Connecté aux données de l’équipe'+(info.user.name ? ' — bienvenue '+info.user.name : '')+(state.driveReadOnly ? ' (lecture seule)' : ''), 'success');
   if(state.dirty && !state.driveReadOnly) driveSyncNow(false);
@@ -2685,10 +2734,55 @@ async function relayJoinFromHash(hash){
   if(isRelay() && state.driveFile.relay.token===link.token){ render(); toast('Déjà connecté avec ce lien'); return; }
   await relayJoin(link);
 }
+/* lecture d'un QR code sur une photo : BarcodeDetector si le navigateur l'a, sinon jsQR, chargé à la demande */
+const QR_LIB_URL = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js';
+const qrReader = {
+  load: ()=>window.jsQR ? Promise.resolve() : new Promise((resolve, reject)=>{
+    const s = el('script',{src:QR_LIB_URL, integrity:'sha384-hStSInNIZ8ljtOVrmrgf7zdHMapaLBWoSnPTtF0nzsybp4+LuhDz6sHuEVpWIX8o', crossorigin:'anonymous', async:''});
+    s.onload = resolve; s.onerror = ()=>reject(new Error('bibliothèque QR indisponible'));
+    document.head.appendChild(s);
+  }),
+  image: file=>new Promise((resolve, reject)=>{
+    const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = ()=>{ URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = ()=>{ URL.revokeObjectURL(url); reject(new Error('image illisible')); };
+    img.src = url;
+  }),
+  async decode(file){
+    const img = await qrReader.image(file);
+    if('BarcodeDetector' in window){
+      try{ const found = await new window.BarcodeDetector({formats:['qr_code']}).detect(img); if(found[0]) return found[0].rawValue; }catch(e){}
+    }
+    await qrReader.load();
+    const scale = Math.min(1, 1600/Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.naturalWidth*scale); c.height = Math.round(img.naturalHeight*scale);
+    const ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0, c.width, c.height);
+    const r = window.jsQR(ctx.getImageData(0, 0, c.width, c.height).data, c.width, c.height, {inversionAttempts:'attemptBoth'});
+    return r ? r.data : '';
+  },
+};
+/* un QR code doit mener à un relais Google : on n'envoie pas de jeton vers une adresse lue sur une image inconnue */
+function inviteFromQr(text){ const l = parseInviteLink(text); return l && /^https:\/\/script\.google\.com\/macros\//.test(l.url) ? l : null; }
 function openJoinModal(){
   const input = el('textarea',{name:'lien', class:'select', rows:'3', 'aria-label':'Lien d’invitation', 'data-fk':'lien-invitation', placeholder:'Collez ici le lien d’invitation reçu (https://…#/rejoindre?r=…&t=…)'});
+  const readQr = async file=>{
+    if(!file) return;
+    let text = '';
+    try{ text = await qrReader.decode(file); }
+    catch(e){ toast('Lecture du QR code impossible : vérifiez la connexion, ou collez le lien.', 'error'); return; }
+    if(!inviteFromQr(text)){ toast('Aucun QR code d’invitation Seaway lisible : reprenez la photo de plus près, bien nette.', 'error'); return; }
+    input.value = text;
+    toast('QR code lu : appuyez sur « Rejoindre ».', 'success');
+  };
+  const pickFile = capture=>el('input',{type:'file', accept:'image/*', capture:capture ? 'environment' : null, style:'display:none;', 'aria-hidden':'true', 'aria-label':'Image du QR code', tabindex:'-1', onchange:e=>{ readQr(e.target.files[0]); e.target.value = ''; }});
+  const camQr = pickFile(true), fileQr = pickFile(false);
+  const qrButtons = el('div',{style:'display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;'},
+    el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'qr-photo', onclick:()=>takePhoto(readQr, ()=>camQr.click())}, el('span',{html:iconCamera()}), 'Prendre le QR code en photo'),
+    el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'qr-image', onclick:()=>fileQr.click()}, 'Choisir une image du QR code'), camQr, fileQr);
   openModal({title:'Rejoindre avec un lien d’invitation', submitLabel:'Rejoindre',
-    body:el('div',{}, el('div',{class:'hint', style:'margin-bottom:8px;'}, 'Le lien est envoyé par l’administrateur (Profils & accès › Lien d’invitation). Fonctionne aussi avec le fichier ouvert depuis OneDrive ou une clé USB.'), input),
+    body:el('div',{}, el('div',{class:'hint', style:'margin-bottom:8px;'}, 'Le lien est envoyé par l’administrateur (Profils & accès › Lien d’invitation). Fonctionne aussi avec le fichier ouvert depuis OneDrive ou une clé USB.'), input, qrButtons),
     validate: d=>parseInviteLink(d.lien) ? null : 'Ce texte ne contient pas de lien d’invitation Seaway.',
     onSubmit: async d=>{ await relayJoin(parseInviteLink(d.lien)); }});
 }
@@ -2845,6 +2939,7 @@ async function openActiveLinksModal(){
               'Bonjour, voici ton accès à Seaway GMAO :', pu ? inviteIdCard(pu, t.ref) : null); }}, 'Lien / QR') : null,
           el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'modifier-lien-'+t.ref, onclick:()=>openLinkAccessModal(t, ()=>draw())}, 'Modifier'),
           t.admin ? el('span',{class:'hint', style:'margin:0;'}, 'se change dans le script') :
+          el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'pin-'+t.ref, onclick:()=>openSetPinModal(p ? profileFullName(p) : t.name || 'ce compte', !!t.admin, t.ref)}, t.hasPin ? 'Changer le PIN' : 'Définir le PIN'),
           el('button',{class:'btn-danger-text', type:'button', 'data-fk':'revoquer-'+t.ref, onclick:()=>confirmModal('Révoquer le lien de '+(p ? profileFullName(p) : t.name || 'cette personne')+' ? L’application de cette personne ne pourra plus lire ni envoyer de données.', async()=>{
             await relayCall('revoke', {ref:t.ref});
             logHistory('users', t.profileId||null, p ? profileFullName(p) : t.name || 'lien', 'invitation révoquée', null, 'réf. '+t.ref);
@@ -3976,7 +4071,7 @@ function renderShellUser(){
   if(!box) return;
   const initials = (state.me.name||'').split(' ').map(s=>s[0]).slice(0,2).join('').toUpperCase() || '·';
   box.innerHTML = `
-    <div class="user-chip">
+    <a class="user-chip" href="#/profils" data-fk="ouvrir-utilisateurs" title="Mon profil et changement d’utilisateur">
       <div class="avatar-fallback">${esc(initials)}</div>
       <div style="min-width:0">
         <div class="name">${esc(state.me.name || 'Vous')} <span class="role-tag" data-fk="role-courant">${esc(roleDef(currentRole()).label)}</span></div>
@@ -3984,7 +4079,7 @@ function renderShellUser(){
           ${fileStatusHTML()}
         </div>
       </div>
-    </div>`;
+    </a>`;
 }
 
 function shell(){
@@ -4015,7 +4110,6 @@ function shell(){
     ),
     el('div',{class:'sidebar-foot'},
       el('div',{style:'display:flex;gap:6px;margin-bottom:8px;'},
-        el('button',{class:'btn btn-ghost btn-sm', style:'flex:1;justify-content:center;', 'aria-label':'Emplacement des données', onclick:openLocationModal}, el('span',{html:iconFile()}),'Emplacement'),
         el('button',{class:'btn btn-ghost btn-sm', style:'flex:1;justify-content:center;', 'aria-label':'Synchroniser les données', onclick:syncNow}, el('span',{class:'sync-spin', html:iconRefresh()}),'Synchro')
       ),
       el('div',{id:'user-chip-slot'})
@@ -7509,6 +7603,21 @@ function viewProfils(slot){
     meCard.appendChild(el('div',{class:'settings-row'},
       el('div',{}, el('div',{class:'lbl'},'Je suis'), el('div',{class:'desc'},'Sans connexion Google, chacun choisit son profil sur son appareil. Avec Google Drive, le profil est reconnu automatiquement par l’adresse Gmail.')),
       sel));
+  }else if(viaRelay){
+    const r = state.driveFile.relay;
+    if(!state._relayAccounts && relayVersion()>=11 && isOnline()) loadRelayAccounts();
+    const list = state._relayAccounts||[], mine = list.find(a=>a.self);
+    const nameOf = a=>{ const u = state.users.find(x=>x.id===a.profileId); return u ? profileFullName(u) : (a.name||'Sans nom'); };
+    const others = list.filter(a=>!a.self).sort((a,b)=>nameOf(a).localeCompare(nameOf(b),'fr'));
+    const box = el('div',{'data-fk':'changer-utilisateur', style:'margin-top:10px;border-top:1px solid var(--border);padding-top:10px;'}, el('div',{class:'lbl', style:'margin-bottom:6px;'}, 'Changer d’utilisateur'));
+    others.forEach(a=>box.appendChild(el('div',{class:'settings-row'},
+      el('div',{}, el('div',{class:'lbl'}, nameOf(a)), el('div',{class:'desc'}, roleDef(a.role).label+(a.hasPin ? '' : ' · pas encore de code PIN'))),
+      el('button',{class:'btn btn-primary btn-sm', type:'button', 'data-fk':'compte-'+a.ref, disabled:a.hasPin ? null : '', onclick:()=>openPinLoginModal(a, nameOf(a))}, 'Utiliser'))));
+    if(!others.length) box.appendChild(el('div',{class:'hint', style:'margin:0 0 6px;'}, !isOnline() ? 'Changement d’utilisateur indisponible sans réseau.' : state._relayAccounts ? 'Aucun autre compte : l’administrateur les crée dans cette page.' : 'Chargement des comptes…'));
+    box.appendChild(el('div',{style:'display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;'},
+      el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'mon-pin', disabled:mine ? null : '', onclick:()=>openSetPinModal(state.me.name||r.name||'ce compte', r.admin)}, mine && mine.hasPin ? 'Modifier mon code PIN…' : 'Définir mon code PIN…'),
+      el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'ajouter-utilisateur', onclick:openJoinModal}, 'Utiliser un lien ou un QR code…')));
+    meCard.appendChild(box);
   }else if(viaDrive && !me && hasAdminProfile()){
     meCard.appendChild(el('div',{class:'banner'}, 'Aucun profil ne correspond à '+state.driveUser.email+' : accès « Équipage ». Demandez à un administrateur de créer votre profil avec cette adresse.'));
   }
@@ -12416,7 +12525,7 @@ function exportSpecPdf(spec){ printSheet(buildExportSheet(spec)); }
    APP_BUILD est inscrit à la publication (tools/preparer-deploiement.ps1) :
    « aaaammjj-hhmm-empreinte ». Fichier ouvert en local : version non numérotée.
    La recherche de mise à jour lit version.json sur le site publié. */
-const APP_BUILD = '20261108-1901-e278a144b5ad';
+const APP_BUILD = '20261108-1924-ab9c6648df3b';
 function appBuildInfo(build){
   const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(?:-(\w+))?/.exec(build||'');
   return m ? {build, date:m[1]+'-'+m[2]+'-'+m[3], time:m[4]+':'+m[5], label:m[3]+'/'+m[2]+'/'+m[1]+' à '+m[4]+'h'+m[5]} : null;
@@ -15370,6 +15479,9 @@ function useFakeRelay(){
         return ok({ok:true, updated:n}); }
       case 'invite': { if(!admin) return ok({error:'réservé à l’administrateur', code:403}); const t = tok();
         srv.tokens[t] = {name:q.name, role:q.role, profileId:q.profileId, created:'2026-10-23T10:00:00.000Z'}; return ok({token:t, ref:t.slice(0,8), link:srv.link(t)}); }
+      case 'accounts': return ok({accounts:Object.entries(srv.tokens).map(([t,o])=>({ref:t.slice(0,8), name:o.name, role:o.admin ? 'admin' : o.role, profileId:o.profileId||'', hasPin:!!o.pin, self:t===q.token}))});
+      case 'setPin': { if(q.ref && !admin) return ok({error:'réservé à l’administrateur', code:403}); const t = q.ref ? Object.keys(srv.tokens).find(x=>x.startsWith(q.ref)) : q.token; srv.tokens[t].pin = q.pin; return ok({ok:true}); }
+      case 'pinLogin': { const t = Object.keys(srv.tokens).find(x=>x.startsWith(q.ref)); if(!t || !srv.tokens[t].pin) return ok({error:'ce compte n’a pas de code PIN', code:500}); return srv.tokens[t].pin===q.pin ? ok({token:t}) : ok({error:'code PIN incorrect', code:500}); }
       case 'list': return ok({tokens:Object.entries(srv.tokens).map(([t,o])=>({ref:t.slice(0,8), name:o.name, role:o.role, profileId:o.profileId||'', admin:!!o.admin, readOnly:!!o.readOnly, self:t===q.token, link:srv.link(t), created:o.created||''}))});
       case 'revoke': Object.keys(srv.tokens).forEach(t=>{ if(t.startsWith(q.ref) && !srv.tokens[t].admin) delete srv.tokens[t]; }); return ok({ok:true});
     }
@@ -15398,6 +15510,80 @@ autotest('Relais', 'pièces jointes rangées par navire, type et marin ; rangeme
   expect.equal(state.jobs[0].attachments[0].dossier, 'Quéhan/Jobs');
   organizeDriveAttachments(); await tick(10);
   expect.equal($$('.modal').length, 0, 'rien à refaire');
+});
+autotest('Relais', 'rejoindre par la photo d’un QR code : lien rempli, adresse étrangère refusée', async ()=>{
+  const good = 'https://baltio.github.io/seaway-gmao/#/rejoindre?r=https%3A%2F%2Fscript.google.com%2Fmacros%2Fs%2FABC%2Fexec&t=0123456789abcdef0123456789abcdef';
+  const bad = 'https://baltio.github.io/seaway-gmao/#/rejoindre?r=https%3A%2F%2Fexemple.fr%2Fexec&t=0123456789abcdef0123456789abcdef';
+  const canvas = document.createElement('canvas'); canvas.width = 8; canvas.height = 8;
+  const stream = canvas.captureStream(5);
+  const photo = new File(['x'], 'qr.jpg', {type:'image/jpeg'});
+  patch(inAppCamera, 'available', ()=>true); patch(inAppCamera, 'open', async ()=>stream); patch(inAppCamera, 'frame', async ()=>photo);
+  let read = bad; patch(qrReader, 'decode', async ()=>read);
+  openJoinModal();
+  const shoot = async ()=>{ $('.modal [data-fk=qr-photo]').click(); await tick(20); $('[data-fk=camera-prendre]').click(); await tick(60); };
+  await shoot();
+  expect.equal($('.modal [name=lien]').value, '', 'adresse étrangère refusée');
+  read = good; await shoot();
+  expect.equal($('.modal [name=lien]').value, good, 'lien rempli');
+  expect.equal(inviteFromQr('rien'), null);
+  closeAllModals();
+});
+autotest('Relais', 'décodage d’une image : BarcodeDetector d’abord, sinon jsQR', async ()=>{
+  const canvas = document.createElement('canvas'); canvas.width = 16; canvas.height = 16; canvas.getContext('2d').fillRect(0, 0, 8, 8);
+  const blob = await new Promise(r=>canvas.toBlob(r, 'image/png'));
+  const file = new File([blob], 'qr.png', {type:'image/png'});
+  patch(window, 'BarcodeDetector', class{ async detect(){ return [{rawValue:'par-detecteur'}]; } });
+  expect.equal(await qrReader.decode(file), 'par-detecteur');
+  patch(window, 'BarcodeDetector', class{ async detect(){ return []; } });
+  let size = 0; patch(window, 'jsQR', (d, w, h)=>{ size = d.length/(w*h); return {data:'par-jsqr'}; });
+  expect.equal(await qrReader.decode(file), 'par-jsqr'); expect.equal(size, 4, 'image RGBA transmise');
+});
+autotest('Relais', 'un profil créé est enregistré dans le fichier de données du Drive', async ()=>{
+  const srv = useFakeRelay();
+  await relayJoin({url:srv.url, token:srv.admin});
+  addDoc('users','users',{nom:'Le Goff', prenom:'Jean', role:'equipage', actif:'oui'}); clearTimeout(saveTimer);
+  await driveSyncNow(false); await tick(20);
+  expect.ok(JSON.parse(srv.content).users.some(u=>u.nom==='Le Goff' && u.role==='equipage'), 'profil dans le fichier');
+});
+autotest('Relais', 'changer d’utilisateur : comptes créés par l’administrateur, passage avec le code PIN du compte', async ()=>{
+  const srv = useFakeRelay();
+  await relayJoin({url:srv.url, token:srv.admin}); await tick(10);
+  const inv = name=>relayCall('invite', {name, role:'equipage', profileId:''});
+  const a = await inv('Anne'), b = await inv('Bob');
+  const rows = async ()=>{ state._relayAccounts = null; renderContent(); await tick(40); };
+  render(); state.route = '#/profils'; await rows();
+  const box = ()=>$('#content-slot [data-fk=changer-utilisateur]');
+  expect.ok(box().textContent.includes('Anne') && box().textContent.includes('pas encore de code PIN'), 'comptes de l’équipe listés');
+  expect.ok($('[data-fk="compte-'+a.ref+'"]').disabled, 'pas de passage sans code');
+  expect.ok(!box().textContent.includes(a.token), 'jeton jamais affiché');
+  await relayCall('setPin', {ref:a.ref, pin:'4821'});
+  await rows();
+  const before = prefStore.getItem('sw_relay_accounts');
+  $('[data-fk="compte-'+a.ref+'"]').click();
+  fillModal({unlock:'0000'}); confirmTopModal(); await tick(30);
+  expect.ok($$('.modal').length===1 && state.driveFile.relay.admin, 'mauvais code refusé');
+  fillModal({unlock:'4821'}); confirmTopModal(); await tick(40);
+  expect.equal($$('.modal').length, 0, 'ni fusion, ni autre question');
+  expect.ok(state.driveFile.relay.token===a.token && currentRole()==='equipage' && state.me.name==='Anne', 'passé sur le compte');
+  expect.equal(prefStore.getItem('sw_relay_accounts'), before, 'rien de gardé sur l’appareil');
+  await rows();
+  $('#content-slot [data-fk=mon-pin]').click();
+  fillModal({pin:'12', pin2:'12'}); confirmTopModal(); await tick(20);
+  expect.equal($$('.modal').length, 1, 'code trop court refusé');
+  fillModal({pin:'5555', pin2:'5555'}); confirmTopModal(); await tick(30);
+  expect.equal(srv.tokens[a.token].pin, '5555', 'chacun change son code');
+  let msg = ''; try{ await relayCall('setPin', {ref:b.ref, pin:'1111'}); }catch(e){ msg = e.message; }
+  expect.ok(msg.includes('administrateur'), 'code d’un autre compte : administrateur seulement');
+  state.route = '#/autotest';
+});
+autotest('Interface', 'menu de gauche : Synchro seule, utilisateur vers son écran, emplacement dans Paramètres', ()=>{
+  render();
+  expect.equal($$('.sidebar-foot .btn').length, 1);
+  expect.ok($('.sidebar-foot .btn').getAttribute('aria-label')==='Synchroniser les données');
+  expect.equal($('[data-fk=ouvrir-utilisateurs]').getAttribute('href'), '#/profils');
+  state.route = '#/parametres'; renderContent();
+  expect.ok($$('#content-slot button').some(x=>x.textContent.includes('Changer d’emplacement')));
+  state.route = '#/autotest';
 });
 autotest('Relais', 'lien d’invitation reconnu (adresse du relais et jeton), y compris collé dans un message', ()=>{
   const l = parseInviteLink('Bonjour, voici ton accès : https://baltio.github.io/seaway-gmao/#/rejoindre?r=https%3A%2F%2Fscript.google.com%2Fmacros%2Fs%2FABC%2Fexec&t=0123456789abcdef0123456789abcdef merci');
@@ -17184,7 +17370,7 @@ autotest('Pièces jointes', 'photo prise dans la fiche, sans quitter l’applica
 });
 autotest('Paramètres', 'version affichée avec sa date, recherche de mise à jour (version publiée plus récente)', async ()=>{
   expect.ok(appBuildInfo('20261024-1203-ff54f95a493b').label==='24/10/2026 à 12h03', 'date lue dans la version');
-  expect.equal(appBuildInfo('20261108-1901-e278a144b5ad'), null, 'fichier non publié');
+  expect.equal(appBuildInfo('20261108-1924-ab9c6648df3b'), null, 'fichier non publié');
   render(); state.route = '#/parametres'; renderContent();
   const card = $('#content-slot [data-fk=carte-version]');
   expect.ok(card && $('[data-fk=version-app]', card).textContent.length>0, 'carte Version et mises à jour');
