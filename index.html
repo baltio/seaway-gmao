@@ -2582,7 +2582,7 @@ function isOnline(){ return navigator.onLine !== false; }
 const RELAY_API = {fetch: (url, opts)=>fetch(url, opts)}; // remplaçable par les autotests
 /* version du relais attendue par cette application (RELAY_VERSION dans relais/Code.gs) ;
    un relais plus ancien fonctionne, mais sans les dernières fonctions (ex. revoir les liens) */
-const RELAY_EXPECTED = 11;
+const RELAY_EXPECTED = 12;
 
 function relayVersion(){ return isRelay() ? Number(state.driveFile.relay.version)||1 : null; }
 function relayOutdated(){ return isRelay() && relayVersion() < RELAY_EXPECTED; }
@@ -2890,13 +2890,19 @@ function inviteIdCard(u, ref){
     el('div',{class:'invite-ref'}, 'réf. ', el('strong',{'data-fk':'invitation-ref'}, ref)));
 }
 /* bouton « Lien d'invitation » d'un profil : lien existant (lien + QR code), sinon création */
+/* code PIN du compte, dans la fenêtre du lien et du QR code (administrateur) : masqué jusqu'au clic */
+function pinCard(t){
+  const value = el('strong',{'data-fk':'pin-valeur'}, t.pin ? '••••' : t.hasPin ? 'à redéfinir pour l’afficher' : 'aucun');
+  return el('div',{class:'settings-row', 'data-fk':'pin-compte', style:'margin:0 0 10px;'}, el('div',{}, 'Code PIN : ', value),
+    t.pin ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'pin-afficher', onclick:e=>{ const hidden = value.textContent==='••••'; value.textContent = hidden ? t.pin : '••••'; e.currentTarget.textContent = hidden ? 'Masquer' : 'Afficher'; }}, 'Afficher') : null);
+}
 async function openProfileLink(u){
   if(!isRelay() || !state.driveFile.relay.admin){ openInviteHelpModal(u); return; }
   await loadRelayLinks(true);
   const links = profileLinks(u.id).filter(t=>t.link).sort((a,b)=>(b.created||'').localeCompare(a.created||''));
   if(!links.length){ inviteProfile(u); return; }
   const t = links.find(x=>!x.admin) || links[0];
-  const extra = el('div',{}, inviteIdCard(u, t.ref),
+  const extra = el('div',{}, inviteIdCard(u, t.ref), pinCard(t),
     t.admin ? el('div',{class:'banner banner-danger', role:'status', 'data-fk':'lien-admin'}, 'Votre lien ADMINISTRATEUR : à ouvrir sur vos propres appareils seulement, ne le transmettez à personne.') : null,
     links.length>1 ? el('div',{class:'banner', role:'status', 'data-fk':'anciens-liens'}, el('div',{style:'flex:1;'}, (links.length-1)+' autre(s) lien(s) actif(s) pour ce profil (réf. '+links.slice(1).map(x=>x.ref).join(', ')+') : gérez-les dans « Utilisateurs et liens ».')) : null,
     canManageProfiles() ? el('div',{style:'margin:0 0 10px;'}, el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'nouveau-lien', onclick:()=>{ closeAllModalsQuiet(); inviteProfile(u); }}, 'Créer un nouveau lien (perdu, téléphone changé…)')) : null);
@@ -2936,7 +2942,7 @@ async function openActiveLinksModal(){
           t.link ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'voir-lien-'+t.ref, onclick:()=>{
             const pu = t.profileId && state.users.find(x=>x.id===t.profileId);
             showLinkModal('Lien d’invitation — '+(pu ? profileFullName(pu) : t.name || 'lien'), t.link, 'Lien de '+(pu ? profileFullName(pu) : t.name || 'cette personne')+' ('+roleDef(t.admin ? 'admin' : t.role).label+'). Le QR code contient exactement ce lien.',
-              'Bonjour, voici ton accès à Seaway GMAO :', pu ? inviteIdCard(pu, t.ref) : null); }}, 'Lien / QR') : null,
+              'Bonjour, voici ton accès à Seaway GMAO :', el('div',{}, pu ? inviteIdCard(pu, t.ref) : null, pinCard(t))); }}, 'Lien / QR') : null,
           el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'modifier-lien-'+t.ref, onclick:()=>openLinkAccessModal(t, ()=>draw())}, 'Modifier'),
           t.admin ? el('span',{class:'hint', style:'margin:0;'}, 'se change dans le script') :
           el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'pin-'+t.ref, onclick:()=>openSetPinModal(p ? profileFullName(p) : t.name || 'ce compte', !!t.admin, t.ref)}, t.hasPin ? 'Changer le PIN' : 'Définir le PIN'),
@@ -12525,7 +12531,7 @@ function exportSpecPdf(spec){ printSheet(buildExportSheet(spec)); }
    APP_BUILD est inscrit à la publication (tools/preparer-deploiement.ps1) :
    « aaaammjj-hhmm-empreinte ». Fichier ouvert en local : version non numérotée.
    La recherche de mise à jour lit version.json sur le site publié. */
-const APP_BUILD = '20261108-1924-ab9c6648df3b';
+const APP_BUILD = '20261108-2049-e3f8d8f4f582';
 function appBuildInfo(build){
   const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(?:-(\w+))?/.exec(build||'');
   return m ? {build, date:m[1]+'-'+m[2]+'-'+m[3], time:m[4]+':'+m[5], label:m[3]+'/'+m[2]+'/'+m[1]+' à '+m[4]+'h'+m[5]} : null;
@@ -15482,7 +15488,7 @@ function useFakeRelay(){
       case 'accounts': return ok({accounts:Object.entries(srv.tokens).map(([t,o])=>({ref:t.slice(0,8), name:o.name, role:o.admin ? 'admin' : o.role, profileId:o.profileId||'', hasPin:!!o.pin, self:t===q.token}))});
       case 'setPin': { if(q.ref && !admin) return ok({error:'réservé à l’administrateur', code:403}); const t = q.ref ? Object.keys(srv.tokens).find(x=>x.startsWith(q.ref)) : q.token; srv.tokens[t].pin = q.pin; return ok({ok:true}); }
       case 'pinLogin': { const t = Object.keys(srv.tokens).find(x=>x.startsWith(q.ref)); if(!t || !srv.tokens[t].pin) return ok({error:'ce compte n’a pas de code PIN', code:500}); return srv.tokens[t].pin===q.pin ? ok({token:t}) : ok({error:'code PIN incorrect', code:500}); }
-      case 'list': return ok({tokens:Object.entries(srv.tokens).map(([t,o])=>({ref:t.slice(0,8), name:o.name, role:o.role, profileId:o.profileId||'', admin:!!o.admin, readOnly:!!o.readOnly, self:t===q.token, link:srv.link(t), created:o.created||''}))});
+      case 'list': return ok({tokens:Object.entries(srv.tokens).map(([t,o])=>({ref:t.slice(0,8), name:o.name, role:o.role, profileId:o.profileId||'', admin:!!o.admin, readOnly:!!o.readOnly, self:t===q.token, link:srv.link(t), created:o.created||'', hasPin:!!o.pin, pin:o.pin||''}))});
       case 'revoke': Object.keys(srv.tokens).forEach(t=>{ if(t.startsWith(q.ref) && !srv.tokens[t].admin) delete srv.tokens[t]; }); return ok({ok:true});
     }
     return ok({error:'action inconnue', code:400});
@@ -15575,6 +15581,21 @@ autotest('Relais', 'changer d’utilisateur : comptes créés par l’administra
   let msg = ''; try{ await relayCall('setPin', {ref:b.ref, pin:'1111'}); }catch(e){ msg = e.message; }
   expect.ok(msg.includes('administrateur'), 'code d’un autre compte : administrateur seulement');
   state.route = '#/autotest';
+});
+autotest('Relais', 'l’administrateur retrouve le code PIN d’un compte avec son lien et son QR code', async ()=>{
+  const srv = useFakeRelay();
+  await relayJoin({url:srv.url, token:srv.admin}); await tick(10);
+  const u = addDoc('users','users',{nom:'Le Goff', prenom:'Jean', role:'equipage', actif:'oui'}); clearTimeout(saveTimer);
+  const a = await relayCall('invite', {name:'Jean', role:'equipage', profileId:u});
+  await relayCall('setPin', {ref:a.ref, pin:'4821'});
+  await openProfileLink(state.users.find(x=>x.id===u)); await tick(20);
+  const value = ()=>$('.modal [data-fk=pin-valeur]').textContent;
+  expect.equal(value(), '••••', 'masqué par défaut');
+  $('.modal [data-fk=pin-afficher]').click();
+  expect.equal(value(), '4821', 'affiché au clic');
+  closeAllModals();
+  const accounts = await relayCall('accounts', {});
+  expect.ok(!JSON.stringify(accounts).includes('4821'), 'jamais dans la liste de changement d’utilisateur');
 });
 autotest('Interface', 'menu de gauche : Synchro seule, utilisateur vers son écran, emplacement dans Paramètres', ()=>{
   render();
@@ -17370,7 +17391,7 @@ autotest('Pièces jointes', 'photo prise dans la fiche, sans quitter l’applica
 });
 autotest('Paramètres', 'version affichée avec sa date, recherche de mise à jour (version publiée plus récente)', async ()=>{
   expect.ok(appBuildInfo('20261024-1203-ff54f95a493b').label==='24/10/2026 à 12h03', 'date lue dans la version');
-  expect.equal(appBuildInfo('20261108-1924-ab9c6648df3b'), null, 'fichier non publié');
+  expect.equal(appBuildInfo('20261108-2049-e3f8d8f4f582'), null, 'fichier non publié');
   render(); state.route = '#/parametres'; renderContent();
   const card = $('#content-slot [data-fk=carte-version]');
   expect.ok(card && $('[data-fk=version-app]', card).textContent.length>0, 'carte Version et mises à jour');
