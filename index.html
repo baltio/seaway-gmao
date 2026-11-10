@@ -271,6 +271,7 @@ a.user-chip:focus-visible{outline:2px solid var(--focus);outline-offset:2px;}
 .th-sort.active,.th-sort:hover{color:var(--text);}
 .th-sort:focus-visible{outline:2px solid var(--focus);outline-offset:2px;}
 .notif-unread .lbl{font-weight:700;}
+.notif-read{opacity:.6;}
 .notif-unread{box-shadow:inset 3px 0 0 var(--warning);padding-left:8px;}
 .invite-id{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;margin:0 0 10px;border:1px solid var(--border);border-left:4px solid var(--navy-500);border-radius:var(--radius);}
 .invite-ref{font-size:12.5px;color:var(--text-soft);white-space:nowrap;}
@@ -8465,11 +8466,20 @@ function viewNotifications(slot){
   if(state._update && state._update.newer) slot.appendChild(el('div',{class:'card settings-card', 'data-fk':'notif-maj'}, el('h3',{}, 'Mise à jour de l’application'),
     el('div',{class:'settings-row'}, el('div',{class:'desc'}, 'Une nouvelle version est disponible'+(state._update.theirs ? ', publiée le '+state._update.theirs.label : '')+'.'),
       el('button',{class:'btn btn-primary btn-sm', type:'button', 'data-fk':'notif-mettre-a-jour', onclick:applyUpdate}, 'Mettre à jour'))));
-  const card = el('div',{class:'card settings-card', 'data-fk':'notif-messages'}, el('h3',{}, 'Messages'));
-  if(!msgs.length) card.appendChild(el('div',{class:'hint'}, 'Aucun message.'));
-  msgs.slice(0, 50).forEach(n=>{
-    const unread = !(n.readBy||[]).includes(me);
-    card.appendChild(el('div',{class:'settings-row'+(unread ? ' notif-unread' : ''), 'data-fk':'notif-'+n.id},
+  // messages lus : masqués, réaffichés grisés à la demande
+  const isRead = n=>(n.readBy||[]).includes(me);
+  const unreadMsgs = msgs.filter(n=>!isRead(n)), readCount = msgs.length - unreadMsgs.length;
+  const showRead = !!state._notifShowRead;
+  const card = el('div',{class:'card settings-card', 'data-fk':'notif-messages'},
+    el('div',{class:'section-head', style:'margin-bottom:6px;'}, el('h3',{style:'margin:0;'}, 'Messages'+(unreadMsgs.length ? ' ('+unreadMsgs.length+' non lu'+(unreadMsgs.length>1 ? 's' : '')+')' : '')),
+      el('div',{style:'display:flex;gap:6px;flex-wrap:wrap;'},
+        unreadMsgs.length>1 ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'notif-tout-lu', onclick:()=>{ unreadMsgs.forEach(markNotificationRead); renderContent(); }}, 'Tout marquer comme lu') : null,
+        readCount ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'notif-voir-lus', 'aria-pressed':String(showRead), onclick:()=>{ state._notifShowRead = !showRead; renderContent(); }}, showRead ? 'Masquer les messages lus' : 'Afficher les messages lus ('+readCount+')') : null)));
+  const shown = showRead ? msgs : unreadMsgs;
+  if(!shown.length) card.appendChild(el('div',{class:'hint'}, msgs.length ? 'Aucun message non lu.' : 'Aucun message.'));
+  shown.slice(0, 50).forEach(n=>{
+    const unread = !isRead(n);
+    card.appendChild(el('div',{class:'settings-row'+(unread ? ' notif-unread' : ' notif-read'), 'data-fk':'notif-'+n.id},
       el('div',{}, el('div',{class:'lbl'}, n.title), el('div',{class:'desc'}, [n.at ? fmtDateTime(n.at) : '', n.by, n.text].filter(Boolean).join(' · '))),
       el('div',{style:'display:flex;gap:6px;'},
         n.ref && n.ref.kind==='nc' && state.nonconformities.some(x=>x.id===n.ref.id) ? el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>{ markNotificationRead(n); openNcModal(state.nonconformities.find(x=>x.id===n.ref.id)); }}, 'Ouvrir') : null,
@@ -12650,7 +12660,7 @@ function exportSpecPdf(spec){ printSheet(buildExportSheet(spec)); }
    APP_BUILD est inscrit à la publication (tools/preparer-deploiement.ps1) :
    « aaaammjj-hhmm-empreinte ». Fichier ouvert en local : version non numérotée.
    La recherche de mise à jour lit version.json sur le site publié. */
-const APP_BUILD = '20261110-1734-27d8cc26bd81';
+const APP_BUILD = '20261110-1738-ec1192487bf8';
 function appBuildInfo(build){
   const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(?:-(\w+))?/.exec(build||'');
   return m ? {build, date:m[1]+'-'+m[2]+'-'+m[3], time:m[4]+':'+m[5], label:m[3]+'/'+m[2]+'/'+m[1]+' à '+m[4]+'h'+m[5]} : null;
@@ -17544,7 +17554,7 @@ autotest('Éléments', 'format 13 : le Viga n’a qu’un moteur principal et un
 });
 autotest('Paramètres', 'version affichée avec sa date, recherche de mise à jour (version publiée plus récente)', async ()=>{
   expect.ok(appBuildInfo('20261024-1203-ff54f95a493b').label==='24/10/2026 à 12h03', 'date lue dans la version');
-  expect.equal(appBuildInfo('20261110-1734-27d8cc26bd81'), null, 'fichier non publié');
+  expect.equal(appBuildInfo('20261110-1738-ec1192487bf8'), null, 'fichier non publié');
   render(); state.route = '#/parametres'; renderContent();
   const card = $('#content-slot [data-fk=carte-version]');
   expect.ok(card && $('[data-fk=version-app]', card).textContent.length>0, 'carte Version et mises à jour');
@@ -17585,6 +17595,23 @@ autotest('Interface', 'cloche du bandeau : nombre à voir, ouvre les notificatio
   markNotificationRead(state.notifications[0]); renderContent();
   expect.equal(count().textContent, '1', 'message lu');
   state.route = '#/autotest';
+});
+autotest('Notifications', 'messages lus masqués, réaffichables grisés ; tout marquer comme lu', async ()=>{
+  addDoc('users','users',{nom:'A', role:'admin'}); prefStore.setItem('sw_profile_id', state.users[0].id);
+  notifyRole('', 'Premier', '', null, null); notifyRole('', 'Second', '', null, null);
+  render(); state.route = '#/notifications'; state._notifShowRead = false; renderContent();
+  const rows = ()=>$$('#content-slot [data-fk=notif-messages] .settings-row').length;
+  expect.equal(rows(), 2);
+  $('#content-slot [data-fk="notif-lu-'+state.notifications[0].id+'"]').click();
+  expect.equal(rows(), 1, 'message lu masqué');
+  $('#content-slot [data-fk=notif-voir-lus]').click();
+  expect.ok(rows()===2 && $('#content-slot .notif-read'), 'réaffiché grisé');
+  $('#content-slot [data-fk=notif-voir-lus]').click();
+  notifyRole('', 'Troisième', '', null, null); renderContent();
+  $('#content-slot [data-fk=notif-tout-lu]').click();
+  expect.equal(rows(), 0, 'tout marqué comme lu');
+  expect.ok($('#content-slot [data-fk=notif-messages]').textContent.includes('Aucun message non lu'));
+  state._notifShowRead = false; state.route = '#/autotest';
 });
 autotest('Notifications', 'catégories désactivables, réglages propres à chaque utilisateur', async ()=>{
   const a = addDoc('users','users',{nom:'Anne', role:'admin'}), b = addDoc('users','users',{nom:'Bob', role:'admin'});
