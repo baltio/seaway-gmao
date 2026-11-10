@@ -1286,7 +1286,7 @@ function meterGauge(vessel, meter, size){
   const arc = (a0, a1, cls)=>'<path class="'+cls+'" d="M'+px(a0, r)+' A'+r+' '+r+' 0 0 1 '+px(a1, r)+'"/>';
   const label = g.frac==null ? 'Aucun job suivi à ce compteur'
     : (g.remaining<0 ? 'Entretien dépassé de '+fmtHours(-g.remaining) : 'Prochain entretien dans '+fmtHours(g.remaining))+' — '+g.task.task;
-  return el('div',{class:'gauge gauge-'+g.status, role:'img', 'aria-label':meterLabel(meter)+' : '+label, title:label, html:
+  return el('div',{class:'gauge gauge-'+g.status, role:'img', 'aria-label':meterLabel(meter, vessel)+' : '+label, title:label, html:
     '<svg viewBox="0 0 120 66" width="'+w+'" height="'+Math.round(w*0.55)+'" aria-hidden="true" focusable="false">'
     + arc(Math.PI, 0.0001, 'gauge-track')
     + (g.frac==null ? '' : arc(Math.PI, Math.max(0.0001, ang), 'gauge-fill'))
@@ -1506,7 +1506,7 @@ const DATA_FILE_NAME = 'seaway-gmao-data.json'; // nom du fichier de données en
 const DATA_KEYS = ['tasks','jobs','equipment','inventory','orders','fuel','vesselCerts','crew','history','meters','meterReadings','documents','sheets','nonconformities','crewAssignments','drydocks','users','settings','workHours','crewPlan','vesselPlan','crewDocs','notifications'];
 const JSON_PICKER_TYPES = [{description:'Données Seaway GMAO', accept:{'application/json':['.json']}}];
 
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 
 function snapshotData(){
   const out = {app:'seaway-gmao', version:SCHEMA_VERSION, revision:state.fileRevision||0, savedAt:new Date().toISOString(), savedBy:state.me.name||''};
@@ -1590,6 +1590,21 @@ const MIGRATIONS = {
   8: obj=>{ if(!Array.isArray(obj.workHours)) obj.workHours = []; return obj; },
   // v10 : planning journalier des marins (crewPlan) et des navires (vesselPlan), même raison que v4
   9: obj=>{ ['crewPlan','vesselPlan'].forEach(k=>{ if(!Array.isArray(obj[k])) obj[k] = []; }); return obj; },
+  // v13 : le Viga n'a qu'un moteur principal et un seul LiLAA (éléments bâbord renommés ; tribord retirés s'ils ne sont reliés à rien)
+  12: obj=>{
+    const now = new Date().toISOString();
+    [['Moteur bâbord','Moteur tribord','Moteur principal'], ['LiLAA bâbord','LiLAA tribord','LiLAA']].forEach(([bd, td, name])=>{
+      const eq = obj.equipment || [];
+      const b = eq.find(e=>e.vessel==='viga' && normText(e.name)===normText(bd));
+      if(b){ b.name = name; if(name==='Moteur principal') b.meter = 'mp1'; b.updatedAt = now; }
+      const t = eq.find(e=>e.vessel==='viga' && normText(e.name)===normText(td));
+      if(!t) return;
+      const used = ['tasks','jobs','inventory','nonconformities','orders','documents','sheets'].some(k=>(obj[k]||[]).some(r=>r.equipmentId===t.id));
+      if(used){ if(t.meter==='mp2') t.meter = ''; }
+      else obj.equipment = eq.filter(e=>e!==t);
+    });
+    return obj;
+  },
   // v12 : arborescence par défaut des éléments, sur chaque navire (identifiants fixes : deux appareils qui migrent ne créent pas de doublons)
   11: obj=>{
     if(!Array.isArray(obj.equipment)) obj.equipment = [];
@@ -2238,7 +2253,7 @@ const RECORD_LABELERS = {
   inventory: r=>'Article « '+r.designation+' »', orders: r=>'Commande « '+r.designation+' »', fuel: r=>'Relevé '+(r.type||'')+' du '+fmtDate(r.date),
   vesselCerts: r=>'Certificat navire « '+r.nom+' »', crew: r=>'Marin '+crewFullName(r), users: r=>'Profil '+profileFullName(r), settings: r=>'Réglage « '+r.id+' »', workHours: r=>'Heures de '+hoursPersonName(r.personKey)+' le '+fmtDate(r.date),
   crewPlan: r=>'Planning de '+crewFullName(crewMember(r.crewId))+' le '+fmtDate(r.date), vesselPlan: r=>'Organisation '+planVesselName(r.vessel)+' le '+fmtDate(r.date),
-  documents: r=>'Document « '+r.titre+' »', sheets: r=>'Tableur « '+r.titre+' »', meters: r=>'Compteur '+meterLabel(r.meter)+' '+vesselName(r.vessel),
+  documents: r=>'Document « '+r.titre+' »', sheets: r=>'Tableur « '+r.titre+' »', meters: r=>'Compteur '+meterLabel(r.meter, r.vessel)+' '+vesselName(r.vessel),
   nonconformities: r=>'Fiche ISM '+ncLabel(r), crewAssignments: r=>'Embarquement de '+crewFullName(crewMember(r.crewId))+' ('+fmtDate(r.debut)+')',
   drydocks: r=>'Arrêt technique « '+r.titre+' »',
   crewDocs: r=>(r.kind==='note' ? 'Feuille de notes' : 'Certificat')+' de '+crewFullName(crewMember(r.crewId)), notifications: r=>'Notification « '+r.title+' »',
@@ -3651,8 +3666,35 @@ const METERS = [
   {key:'mp2', label:'MP tribord', long:'Moteur principal tribord'},
   {key:'dg',  label:'GE',  long:'Groupe électrogène'},
 ];
-const meterDef = k => METERS.find(m=>m.key===k) || METERS[0];
-const meterLabel = k => meterDef(k).label;
+/* équipement propre à chaque navire : les clés restent communes (données compatibles),
+   les noms changent et ce qui n'existe pas à bord est masqué (null) */
+const VESSEL_LAYOUTS = {
+  viga: {
+    meters: {mp1:{label:'MP', long:'Moteur principal'}, mp2:null},
+    tanks: {'go-bd':{l:'Caisse MDO'}, 'go-td':null, 'hu-bd':{l:'Huile propulsion'}, 'hu-td':null, 'hu-aux':{l:'Huile auxiliaire'}},
+  },
+};
+const layoutOf = v=>VESSEL_LAYOUTS[v] || {};
+function vesselMeters(v){ const L = layoutOf(v).meters || {}; return METERS.filter(m=>L[m.key]!==null).map(m=>({...m, ...(L[m.key]||{})})); }
+const meterDef = (k, v) => { const m = METERS.find(x=>x.key===k) || METERS[0], o = (layoutOf(v).meters || {})[m.key]; return o ? {...m, ...o} : m; };
+const meterLabel = (k, v) => meterDef(k, v).label;
+const meterOptions = (v, long)=>vesselMeters(v).map(m=>({v:m.key, l:long===false ? m.label : m.label+' — '+m.long}));
+/* listes « compteur » et « caisse » d'une fenêtre : mises à jour quand on change de navire */
+function bindVesselEquipmentSelects(body){
+  const vs = $('[name=vessel]', body);
+  if(!vs) return;
+  vs.addEventListener('change', ()=>{
+    [['meter', v=>meterOptions(v)], ['compteur', v=>meterOptions(v)], ['caisse', v=>vesselTanks(v).map(t=>({v:t.k, l:t.l}))]].forEach(([n, opts])=>{
+      const sel = $('select[name="'+n+'"]', body);
+      if(!sel) return;
+      const cur = sel.value, empty = sel.options[0] && sel.options[0].value==='' ? sel.options[0].textContent : null;
+      sel.innerHTML = '';
+      if(empty!=null) sel.appendChild(el('option',{value:''}, empty));
+      opts(vs.value).forEach(o=>sel.appendChild(el('option',{value:o.v}, o.l)));
+      sel.value = [...sel.options].some(o=>o.value===cur) ? cur : sel.options[0] ? sel.options[0].value : '';
+    });
+  });
+}
 const fmtHours = h => (h==null || h==='' || isNaN(h)) ? '—' : Number(h).toLocaleString('fr-FR')+' h';
 
 function meterRecord(vessel, meter){
@@ -3706,7 +3748,7 @@ function resetMeter(vessel, meter, newValue, note, date){
   setMeterValue(vessel, meter, newValue, 'remise à zéro');
   state.meterReadings.unshift({id:uid(), vessel, meter, type:'reset', heures:newValue, heuresAvant:before,
     date: date || todayISO(), at:new Date().toISOString(), by:state.me.name||null, source:'manuel', note: note||''});
-  logHistory('meters', vessel+':'+meter, vesselName(vessel)+' — compteur '+meterLabel(meter), 'remise à zéro', vessel,
+  logHistory('meters', vessel+':'+meter, vesselName(vessel)+' — compteur '+meterLabel(meter, vessel), 'remise à zéro', vessel,
     fmtHours(before)+' → '+fmtHours(newValue)
     + (adjusted.length ? ' · '+adjusted.length+' job(s) récurrent(s) recalé(s)' : '')
     + (note ? ' · '+note : ''));
@@ -3740,17 +3782,17 @@ function taskEstimatedDate(t){
 function taskDueText(t){
   if(t.unit==='heures' && t.cycleHours){
     const meter = vesselMeter(t.vessel, t.meter||'mp1');
-    if(t.hoursAtLast==null || t.hoursAtLast==='') return meterLabel(t.meter)+' : à renseigner';
+    if(t.hoursAtLast==null || t.hoursAtLast==='') return meterLabel(t.meter, t.vessel)+' : à renseigner';
     const due = Number(t.hoursAtLast)+Number(t.cycleHours);
     const est = taskEstimatedDate(t);
-    return meterLabel(t.meter)+' à '+fmtHours(due) + (meter!=null ? ' (reste '+fmtHours(due-meter)+')' : '') + (est && due-meter>0 ? ' · vers le '+fmtDate(est) : '');
+    return meterLabel(t.meter, t.vessel)+' à '+fmtHours(due) + (meter!=null ? ' (reste '+fmtHours(due-meter)+')' : '') + (est && due-meter>0 ? ' · vers le '+fmtDate(est) : '');
   }
   return fmtDate(t.nextDate);
 }
 
 function metersPanel(vessel){
   const wrap = el('div',{class:'meters-panel', role:'group', 'aria-label':'Compteurs horaires'});
-  METERS.forEach(m=>{
+  vesselMeters(vessel).forEach(m=>{
     const v = vesselMeter(vessel, m.key);
     const last = meterReadingsFor(vessel, m.key)[0];
     wrap.appendChild(el('div',{class:'meter-card'},
@@ -3772,7 +3814,7 @@ function openMeterModal(vessel, meter){
   meter = meter || 'mp1';
   const current = vesselMeter(vessel, meter);
   const body = el('div',{},
-    el('div',{class:'hint', style:'margin-bottom:10px;'}, vesselName(vessel)+' — '+meterDef(meter).long+' ('+meterLabel(meter)+') — valeur actuelle : '+fmtHours(current)),
+    el('div',{class:'hint', style:'margin-bottom:10px;'}, vesselName(vessel)+' — '+meterDef(meter, vessel).long+' ('+meterLabel(meter, vessel)+') — valeur actuelle : '+fmtHours(current)),
     fieldRow(
       field('Date du relevé','date','date', null, todayISO()),
       field('Relevé (heures)','heures','number', null, current ?? '')
@@ -3780,7 +3822,7 @@ function openMeterModal(vessel, meter){
     field('Remarque (optionnel)','note','text', null, '')
   );
   openModal({
-    title:'Relever le compteur '+meterLabel(meter),
+    title:'Relever le compteur '+meterLabel(meter, vessel),
     body,
     submitLabel:'Enregistrer',
     readOnly: !canInput(),
@@ -3791,8 +3833,8 @@ function openMeterModal(vessel, meter){
     },
     onSubmit: async (data)=>{
       recordMeterReading(vessel, meter, Number(data.heures), {source:'manuel', date:data.date, note:data.note});
-      logHistory('meters', vessel+':'+meter, vesselName(vessel)+' — compteur '+meterLabel(meter), 'relevé compteur', vessel, fmtHours(data.heures)+(data.note?' · '+data.note:''));
-      toast('Compteur '+meterLabel(meter)+' mis à jour', 'success');
+      logHistory('meters', vessel+':'+meter, vesselName(vessel)+' — compteur '+meterLabel(meter, vessel), 'relevé compteur', vessel, fmtHours(data.heures)+(data.note?' · '+data.note:''));
+      toast('Compteur '+meterLabel(meter, vessel)+' mis à jour', 'success');
     }
   });
 }
@@ -3800,7 +3842,7 @@ function openMeterResetModal(vessel, meter){
   const current = vesselMeter(vessel, meter);
   const nbTasks = state.tasks.filter(t=>t.vessel===vessel && t.unit==='heures' && (t.meter||'mp1')===meter).length;
   const body = el('div',{},
-    el('div',{class:'banner'}, 'À utiliser quand le compteur ou le moteur est remplacé. Le compteur '+meterLabel(meter)+' ('+fmtHours(current)+') repartira de la valeur indiquée. L’historique des relevés est conservé'
+    el('div',{class:'banner'}, 'À utiliser quand le compteur ou le moteur est remplacé. Le compteur '+meterLabel(meter, vessel)+' ('+fmtHours(current)+') repartira de la valeur indiquée. L’historique des relevés est conservé'
       + (nbTasks ? ' et les '+nbTasks+' job(s) récurrent(s) suivis sur ce compteur seront recalés pour garder leur échéance réelle.' : '.')),
     fieldRow(
       field('Date','date','date', null, todayISO()),
@@ -3809,7 +3851,7 @@ function openMeterResetModal(vessel, meter){
     field('Motif','note','text', null, '', 'ex. remplacement du compteur, échange standard moteur')
   );
   openModal({
-    title:'Remise à zéro du compteur '+meterLabel(meter)+' — '+vesselName(vessel),
+    title:'Remise à zéro du compteur '+meterLabel(meter, vessel)+' — '+vesselName(vessel),
     body,
     submitLabel:'Remettre à zéro',
     readOnly: !canEdit(),
@@ -3819,7 +3861,7 @@ function openMeterResetModal(vessel, meter){
     },
     onSubmit: async (data)=>{
       const n = resetMeter(vessel, meter, Number(data.valeur), data.note, data.date);
-      toast('Compteur '+meterLabel(meter)+' remis à '+fmtHours(data.valeur)+(n?' — '+n+' job(s) recalé(s)':''));
+      toast('Compteur '+meterLabel(meter, vessel)+' remis à '+fmtHours(data.valeur)+(n?' — '+n+' job(s) recalé(s)':''));
     }
   });
 }
@@ -3893,11 +3935,11 @@ function meterTrendCharts(vessel, meter, months){
   wrap.appendChild(el('div',{class:'hint', style:'margin:0 0 8px;'}, 'Utilisation moyenne : '
     +(avg30!=null ? fmtNum(avg30, 1)+' h/jour sur 30 jours' : '— sur 30 jours')+' · '+(avg90!=null ? fmtNum(avg90, 1)+' h/jour sur 90 jours' : '— sur 90 jours')));
   const grid = el('div',{class:'chart-grid'});
-  grid.appendChild(chartCard('Valeur du compteur '+meterLabel(meter), 'heures · chaque point est un relevé ; la courbe repart après une remise à zéro',
-    pts.length>=2 ? timeChartSVG({points:pts, unit:'h', ariaLabel:'Évolution du compteur '+meterLabel(meter)+' dans le temps'})
+  grid.appendChild(chartCard('Valeur du compteur '+meterLabel(meter, vessel), 'heures · chaque point est un relevé ; la courbe repart après une remise à zéro',
+    pts.length>=2 ? timeChartSVG({points:pts, unit:'h', ariaLabel:'Évolution du compteur '+meterLabel(meter, vessel)+' dans le temps'})
       : el('div',{class:'hint'}, 'Au moins deux relevés sont nécessaires pour tracer la courbe.')));
-  grid.appendChild(chartCard('Heures de fonctionnement par mois', meterDef(meter).long,
-    chartSVG({kind:'bar', unit:'h', ariaLabel:'Heures de fonctionnement '+meterLabel(meter)+' par mois',
+  grid.appendChild(chartCard('Heures de fonctionnement par mois', meterDef(meter, vessel).long,
+    chartSVG({kind:'bar', unit:'h', ariaLabel:'Heures de fonctionnement '+meterLabel(meter, vessel)+' par mois',
       data: mrows.map(mb=>{ const h = meterRunHours(vessel, meter, mb.from, mb.to); return {label:mb.label, value:h||null, tip:mb.long+' : '+fmtNum(h)+' h'}; })})));
   wrap.appendChild(grid);
   return wrap;
@@ -3907,7 +3949,7 @@ function openMeterTrends(vessel){
     ...[['6','6 derniers mois'],['12','12 derniers mois'],['24','24 derniers mois'],['','Tout l’historique']].map(([v,l])=>el('option',{value:v}, l)));
   sel.value = '12';
   const box = el('div',{});
-  const draw = ()=>{ box.innerHTML = ''; METERS.forEach(m=>{ box.appendChild(el('h3',{style:'font-size:15px;margin:12px 0 6px;'}, 'Compteur '+m.label+' — '+m.long)); box.appendChild(meterTrendCharts(vessel, m.key, Number(sel.value)||0)); }); };
+  const draw = ()=>{ box.innerHTML = ''; vesselMeters(vessel).forEach(m=>{ box.appendChild(el('h3',{style:'font-size:15px;margin:12px 0 6px;'}, 'Compteur '+m.label+' — '+m.long)); box.appendChild(meterTrendCharts(vessel, m.key, Number(sel.value)||0)); }); };
   sel.addEventListener('change', draw); draw();
   openModal({title:'Tendances des compteurs — '+vesselName(vessel), infoOnly:true, wide:true, body:el('div',{}, el('div',{class:'toolbar'}, sel), box)});
 }
@@ -3925,7 +3967,7 @@ function openMeterHistory(vessel, meter){
           el('td',{}, r.by||'—'),
           el('td',{}, [r.source && r.source!=='manuel' ? r.source : '', r.note||''].filter(Boolean).join(' · ') || '—')
         ))))));
-  openModal({title:'Historique du compteur '+meterLabel(meter)+' — '+vesselName(vessel), body, infoOnly:true, wide:true});
+  openModal({title:'Historique du compteur '+meterLabel(meter, vessel)+' — '+vesselName(vessel), body, infoOnly:true, wide:true});
 }
 
 /* ===================== GENERIC DATA OPS (fichier local) ===================== */
@@ -4364,7 +4406,7 @@ function viewComparatif(slot){
     {label:'Pièces de rechange en seuil bas', fn:v=>state.inventory.filter(i=>i.vessel===v.key && i.nature==='piece' && i.seuilAlerte!=null && i.seuilAlerte!=='' && Number(i.quantite)<=Number(i.seuilAlerte)).length},
     {label:'Commandes en cours', fn:v=>state.orders.filter(o=>o.vessel===v.key && o.statut!=='Reçu' && o.statut!=='Annulé').length},
     {label:'Certificats navire < 30j', fn:v=>state.vesselCerts.filter(c=>c.vessel===v.key && c.dateExpiration && diffDays(todayISO(),c.dateExpiration)<=30).length},
-    ...METERS.map(m=>({label:'Compteur '+m.label, fn:v=>fmtHours(vesselMeter(v.key, m.key))})),
+    ...METERS.map(m=>({label:'Compteur '+m.label.replace(' bâbord', ' (bâbord / unique)'), fn:v=>vesselMeters(v.key).some(x=>x.key===m.key) ? fmtHours(vesselMeter(v.key, m.key)) : 'sans objet'})),
   ];
   const card = el('div',{class:'card', style:'padding:16px 18px;'});
   const wrap = el('div',{class:'table-wrap'});
@@ -4423,7 +4465,7 @@ function buildCalendarEvents(from, to){
     }
     // job au compteur : échéance estimée d'après l'utilisation moyenne (prévisionnel)
     const est = !t.nextDate && taskEstimatedDate(t);
-    if(est) add({...base, date:est, kind:'projected', status:taskStatus(t)==='retard' ? 'retard' : 'prevu', sub:base.sub+' · estimé au compteur '+meterLabel(t.meter)});
+    if(est) add({...base, date:est, kind:'projected', status:taskStatus(t)==='retard' ? 'retard' : 'prevu', sub:base.sub+' · estimé au compteur '+meterLabel(t.meter, t.vessel)});
     const done = t.completions || [];
     done.forEach(c=>add({...base, date:c.date, kind:'done', status:'fait', note:c.commentaire||''}));
 
@@ -4857,7 +4899,7 @@ function viewTachesPeriodiques(slot){
           meta?el('div',{style:'font-size:11.5px;color:var(--text-soft);margin-top:3px;'}, meta):null
         ),
         el('td',{}, eqn?el('span',{class:'link-tag'}, eqn):'—'),
-        el('td',{}, t.unit==='heures' && t.cycleHours ? 'Toutes les '+fmtHours(t.cycleHours)+' ('+meterLabel(t.meter)+')' : (t.periodicity||'—')),
+        el('td',{}, t.unit==='heures' && t.cycleHours ? 'Toutes les '+fmtHours(t.cycleHours)+' ('+meterLabel(t.meter, t.vessel)+')' : (t.periodicity||'—')),
         el('td',{}, fmtDate(t.lastDate)),
         el('td',{}, taskDueText(t)),
         el('td',{html:statusBadge(s)}),
@@ -4907,7 +4949,7 @@ function recordHistorySection(rec){
       const files = c.attachments || [];
       det.appendChild(el('div',{class:'rh-item'},
         el('div',{class:'rh-head'}, el('strong',{}, fmtDate(c.date)),
-          (c.by ? ' · '+c.by : '') + (c.heures!=null ? ' · '+meterLabel(rec.meter)+' '+fmtHours(c.heures) : '')),
+          (c.by ? ' · '+c.by : '') + (c.heures!=null ? ' · '+meterLabel(rec.meter, rec.vessel)+' '+fmtHours(c.heures) : '')),
         c.commentaire ? el('div',{class:'rh-text'}, c.commentaire) : null,
         files.length ? el('div',{class:'rh-files'}, ...files.map(a=>el('button',{class:'btn btn-ghost btn-sm', type:'button',
           'aria-label':'Voir '+(a.name||'la pièce jointe'), disabled: canDisplayAttachment(a) ? null : '',
@@ -4951,7 +4993,7 @@ function openTaskModal(t){
     field('Catégorie ou élément concerné','equipmentId','select', equipmentLinkOptions(vessel), linkValue(t), 'recensé dans « Éléments du navire »'),
     fieldRow(
       field('Suivi de l’échéance','unit','select', [{v:'date',l:'Par date'},{v:'heures',l:'Par compteur horaire'}], t?.unit||'date'),
-      field('Compteur','meter','select', METERS.map(m=>({v:m.key, l:m.label+' — '+m.long})), t?.meter||'mp1', 'si suivi par compteur horaire')
+      field('Compteur','meter','select', meterOptions(vessel), t?.meter||'mp1', 'si suivi par compteur horaire')
     ),
     fieldRow(
       field('Périodicité (libellé)','periodicity','text', null, t?.periodicity||'', 'ex. Mensuelle, Bi-annuelle…'),
@@ -5027,7 +5069,7 @@ function openDoneModal(t){
       field(isDrill ? 'Exercice réalisé le' : 'Effectué le','lastDate','date', null, todayISO()),
       field('Prochaine échéance','nextDate','date', null, suggestedNext)
     ),
-    byHours ? field('Compteur '+meterLabel(t.meter)+' au moment de l’intervention (h)','heures','number', null, vesselMeter(t.vessel, t.meter||'mp1') ?? '') : null,
+    byHours ? field('Compteur '+meterLabel(t.meter, t.vessel)+' au moment de l’intervention (h)','heures','number', null, vesselMeter(t.vessel, t.meter||'mp1') ?? '') : null,
     field(isDrill ? 'Compte rendu du drill' : 'Commentaire','commentaire','textarea', null, '',
       isDrill ? 'déroulé, participants, temps de réaction, points à améliorer…' : 'constats, pièces remplacées…'),
     isDrill ? null : partsEl,
@@ -5041,7 +5083,7 @@ function openDoneModal(t){
     validate: (data)=>{
       if(!data.lastDate) return 'La date de réalisation est obligatoire.';
       if(data.nextDate && data.nextDate < data.lastDate) return 'La prochaine échéance doit être postérieure (ou égale) à la date d’exécution.';
-      if(byHours && (data.heures==='' || isNaN(data.heures))) return 'Indiquez la valeur du compteur '+meterLabel(t.meter)+'.';
+      if(byHours && (data.heures==='' || isNaN(data.heures))) return 'Indiquez la valeur du compteur '+meterLabel(t.meter, t.vessel)+'.';
       return isDrill ? null : partsStockError(partsEl._getList());
     },
     onSubmit: async (data)=>{
@@ -5057,7 +5099,7 @@ function openDoneModal(t){
       updateDoc('tasks','tasks', t.id, upd);
       logHistory('tasks', t.id, t.task, 'effectuée', t.vessel,
         'Faite le '+fmtDate(data.lastDate)
-        + (byHours ? ' à '+fmtHours(completion.heures)+' '+meterLabel(t.meter) : '')
+        + (byHours ? ' à '+fmtHours(completion.heures)+' '+meterLabel(t.meter, t.vessel) : '')
         + (data.nextDate ? ' · prochaine échéance '+fmtDate(data.nextDate) : '')
         + (files.length ? ' · '+files.length+' pièce(s) jointe(s)' : '')
         + (used.length ? ' · pièces : '+partsText(used) : '')
@@ -5760,7 +5802,7 @@ function openEquipmentModal(eq, prefill){
     field('Navire','vessel','select', VESSELS.map(v=>({v:v.key,l:v.name})), eq?.vessel||state.activeVessel),
     field('Nom de l’élément','name','text', null, eq?.name||'', 'ex. Moteur 1, Pompe de cale, Feux de navigation, Radio VHF'),
     field('Catégorie','categorie','select', cats.map(c=>({v:c,l:c})), eq?.categorie||prefill?.categorie||cats[0]),
-    field('Compteur associé','meter','select', [{v:'',l:'— Aucun'}, ...METERS.map(m=>({v:m.key, l:m.label+' — '+m.long}))], eq?.meter||'', 'relie à cet élément les relevés de carburant et d’huile de ce compteur'),
+    field('Compteur associé','meter','select', [{v:'',l:'— Aucun'}, ...meterOptions(eq?.vessel||state.activeVessel)], eq?.meter||'', 'relie à cet élément les relevés de carburant et d’huile de ce compteur'),
     field('Notes','notes','textarea', null, eq?.notes||''),
     isEdit ? equipHistoryLink('', eq.id, eq.vessel) : null,
     isEdit ? linkedToEquipmentSection(eq) : null,
@@ -6967,7 +7009,10 @@ const FUEL_TANKS = [
   {k:'hu-aux', l:'Huile caisse auxiliaire', type:'Huile moteur', meter:'dg'},
   {k:'res-bidon', l:'Bidon de réserve', type:'Huile moteur'},
 ];
-const tankDef = k=>FUEL_TANKS.find(t=>t.k===k) || {k, l:k||'Caisse', type:'Autre'};
+const tankDef = (k, v)=>{ const t = FUEL_TANKS.find(x=>x.k===k) || {k, l:k||'Caisse', type:'Autre'}, o = (layoutOf(v).tanks || {})[k]; return o ? {...t, ...o} : t; };
+function vesselTanks(v){ const L = layoutOf(v).tanks || {}; return FUEL_TANKS.filter(t=>L[t.k]!==null).map(t=>({...t, ...(L[t.k]||{})})); }
+const goTanks = v=>vesselTanks(v).filter(t=>t.type==='Gazole').map(t=>t.k);
+const oilTanks = v=>vesselTanks(v).filter(t=>t.type==='Huile moteur').map(t=>t.k);
 const numOrNull = v=>v==='' || v==null || isNaN(v) ? null : Number(v);
 const round2 = v=>v==null ? null : Math.round(v*100)/100;
 /* coût d'une quantité : prix total s'il est donné, sinon quantité × prix au litre */
@@ -7031,8 +7076,9 @@ function openFuelTransferModal(){
   const body = el('div',{},
     field('Stock','src','select', stock.map((s, i)=>({v:String(i), l:s.type+' · '+siteName(s.site)+' : '+fmtNum(s.litres)+' L'+(s.prixLitre!=null ? ' ('+fmtNum(s.prixLitre, 3)+' €/L)' : '')})), '0'),
     fieldRow(field('Vers le navire','vessel','select', VESSELS.map(v=>({v:v.key, l:v.name})), state.activeVessel), field('Date','date','date', null, todayISO())),
-    fieldRow(field('Quantité (L)','qty','number', null, ''), field('Caisse','caisse','select', [{v:'', l:'—'}, ...FUEL_TANKS.map(t=>({v:t.k, l:t.l}))], '')),
+    fieldRow(field('Quantité (L)','qty','number', null, ''), field('Caisse','caisse','select', [{v:'', l:'—'}, ...vesselTanks(state.activeVessel).map(t=>({v:t.k, l:t.l}))], '')),
     field('Notes','notes','text', null, ''));
+  bindVesselEquipmentSelects(body);
   openModal({title:'Transférer vers un navire', body, submitLabel:'Transférer', readOnly:!canInput(),
     validate: d=>{ const s = stock[Number(d.src)], q = Number(d.qty); if(!(q>0)) return 'Indiquez une quantité positive.'; if(q > s.litres) return 'Quantité supérieure au stock ('+fmtNum(s.litres)+' L).';
       const t = d.caisse && tankDef(d.caisse); if(t && t.type!==s.type) return 'Cette caisse n’est pas une caisse de '+s.type.toLowerCase()+'.'; return null; },
@@ -7117,7 +7163,7 @@ function viewCarburant(slot){
       el('td',{style:'white-space:nowrap;'}, cost!=null ? fmtEuros(round2(cost)) : '—',
         !soutage && r.prixLitre!=null && r.prixLitre!=='' ? el('div',{class:'hint', style:'margin:2px 0 0;'}, fmtNum(r.prixLitre, 3)+' €/L') : null),
       el('td',{}, company ? (r.site ? siteName(r.site) : '—')
-        : [r.compteurHeures!=null && r.compteurHeures!=='' ? meterLabel(r.compteur)+' : '+fmtHours(r.compteurHeures) : '', r.tripLog!=null && r.tripLog!=='' ? 'trip log '+fmtNum(r.tripLog)+' milles' : ''].filter(Boolean).join(' · ') || '—'),
+        : [r.compteurHeures!=null && r.compteurHeures!=='' ? meterLabel(r.compteur, r.vessel)+' : '+fmtHours(r.compteurHeures) : '', r.tripLog!=null && r.tripLog!=='' ? 'trip log '+fmtNum(r.tripLog)+' milles' : ''].filter(Boolean).join(' · ') || '—'),
       el('td',{class:'row-actions'}, filesButton(r.attachments, soutage ? 'soutage du '+fmtDate(r.date) : r.type)),
       el('td',{}, r.notes||'')
     ));
@@ -7154,7 +7200,7 @@ function openFuelModal(r, prefill){
     el('div',{class:'fuel-company-only'}, field('Lieu de stockage','site','select', inventorySites().map(s=>({v:s.v, l:s.l})), base.site||'chantier', 'où le carburant ou l’huile achetés pour la compagnie sont stockés')),
     el('div',{class:'fuel-vessel-only'},
       fieldRow(
-        field('Compteur relevé','compteur','select', METERS.map(m=>({v:m.key, l:m.label+' — '+m.long})), base.compteur||'mp1'),
+        field('Compteur relevé','compteur','select', meterOptions(owner||state.activeVessel), base.compteur||'mp1'),
         field('Valeur du compteur (h)','compteurHeures','number', null, base.compteurHeures ?? '', 'relevé au moment de la consommation')
       ),
       field('Trip log (milles)','tripLog','number', null, base.tripLog ?? '', 'compteur de milles parcourus du navire')),
@@ -7162,6 +7208,7 @@ function openFuelModal(r, prefill){
     attachEl
   );
   const vesselSel = $('[name=vessel]', body);
+  bindVesselEquipmentSelects(body);
   const toggle = ()=>{ const c = !vesselSel.value; $('.fuel-company-only', body).style.display = c ? '' : 'none'; $('.fuel-vessel-only', body).style.display = c ? 'none' : ''; };
   vesselSel.addEventListener('change', toggle); toggle();
   const q = $('[name=quantite]', body), pl = $('[name=prixLitre]', body), pt = $('[name=prixTotal]', body);
@@ -7204,18 +7251,18 @@ function openSoutageModal(r, prefill){
   const attachEl = attachmentsEditor(base.attachments, {label:'Facture(s) du soutage (photo ou PDF)'});
   const totalBox = el('div',{class:'fuel-total', 'data-fk':'soutage-total'});
   const tbody = el('tbody',{});
-  FUEL_TANKS.forEach(t=>{
+  FUEL_TANKS.forEach(t=>{ // toutes les lignes ; celles qui n'existent pas sur le navire choisi sont masquées
     const l = lines[t.k] || {};
     const inp = (n, v, label)=>el('input',{type:'number', inputmode:'decimal', step:'any', class:'select fuel-num', name:n+'-'+t.k, 'aria-label':label+' — '+t.l, value:v ?? ''});
     const q = inp('q', l.quantite, 'Quantité (L)'), pl = inp('pl', l.prixLitre, 'Prix au litre'), pt = inp('pt', l.prixTotal, 'Prix total');
     q.addEventListener('input', ()=>{ if(q.value!=='' && pl.value!=='') pt.value = String(round2(Number(q.value)*Number(pl.value))); sumUp(); });
     pl.addEventListener('input', ()=>{ if(q.value!=='' && pl.value!=='') pt.value = String(round2(Number(q.value)*Number(pl.value))); sumUp(); });
     pt.addEventListener('input', ()=>{ if(q.value!=='' && Number(q.value)>0 && pt.value!=='') pl.value = String(Math.round(Number(pt.value)/Number(q.value)*1000)/1000); sumUp(); });
-    tbody.appendChild(el('tr',{class:t.type==='Gazole' ? 'fuel-go' : 'fuel-oil'}, el('th',{scope:'row'}, t.l), el('td',{}, q), el('td',{}, pl), el('td',{}, pt)));
+    tbody.appendChild(el('tr',{class:t.type==='Gazole' ? 'fuel-go' : 'fuel-oil', 'data-caisse':t.k}, el('th',{scope:'row'}, t.l), el('td',{}, q), el('td',{}, pl), el('td',{}, pt)));
   });
   function sumUp(){
     let litres = 0, cost = 0, hasCost = false;
-    FUEL_TANKS.forEach(t=>{
+    vesselTanks($('[name=vessel]', body).value).forEach(t=>{
       const q = Number($('[name="q-'+t.k+'"]', body).value)||0, c = lineCost(q, $('[name="pl-'+t.k+'"]', body).value, $('[name="pt-'+t.k+'"]', body).value);
       litres += q; if(c!=null){ cost += c; hasCost = true; }
     });
@@ -7230,7 +7277,7 @@ function openSoutageModal(r, prefill){
       field('Lieu (port, quai)','lieu','text', null, base.lieu||'')),
     fieldRow(
       field('Trip log (milles)','tripLog','number', null, base.tripLog ?? '', 'compteur de milles parcourus du navire au moment du plein'),
-      field('Compteur relevé','compteur','select', METERS.map(m=>({v:m.key, l:m.label})), base.compteur||'mp1')),
+      field('Compteur relevé','compteur','select', meterOptions(vessel, false), base.compteur||'mp1')),
     field('Valeur du compteur (h)','compteurHeures','number', null, base.compteurHeures ?? '', 'facultatif : met à jour le compteur horaire'),
     el('div',{class:'field'}, el('div',{class:'field-label'}, 'Caisses (quantité, prix au litre, prix total — l’un des deux prix suffit)'),
       el('div',{class:'table-wrap'}, el('table',{class:'compact-table fuel-tanks'},
@@ -7238,21 +7285,26 @@ function openSoutageModal(r, prefill){
       totalBox),
     field('Notes','notes','textarea', null, base.notes||''),
     attachEl);
-  sumUp();
+  const showTanks = ()=>{ const v = $('[name=vessel]', body).value, mine = vesselTanks(v);
+    $$('tr[data-caisse]', tbody).forEach(tr=>{ const t = mine.find(x=>x.k===tr.dataset.caisse); tr.hidden = !t; if(t) tr.querySelector('th').textContent = t.l; });
+    sumUp(); };
+  $('[name=vessel]', body).addEventListener('change', showTanks);
+  bindVesselEquipmentSelects(body);
+  showTanks();
   openModal({
     title: isEdit ? 'Soutage du '+fmtDate(r.date)+' — '+vesselName(r.vessel) : 'Nouveau soutage',
     body, wide:true,
     readOnly: r ? !canEdit() : !canInput(),
     validate: d=>{
-      if(!FUEL_TANKS.some(t=>Number(d['q-'+t.k])>0)) return 'Indiquez la quantité d’au moins une caisse.';
-      if(FUEL_TANKS.some(t=>d['q-'+t.k]!=='' && Number(d['q-'+t.k])<0)) return 'Une quantité est négative.';
+      if(!vesselTanks(d.vessel).some(t=>Number(d['q-'+t.k])>0)) return 'Indiquez la quantité d’au moins une caisse.';
+      if(vesselTanks(d.vessel).some(t=>d['q-'+t.k]!=='' && Number(d['q-'+t.k])<0)) return 'Une quantité est négative.';
       const tl = numOrNull(d.tripLog), prev = tripLogReadings(d.vessel).filter(x=>x.date<=d.date && !(isEdit && x.date===r.date && x.v===Number(r.tripLog))).pop();
       if(tl!=null && prev && tl < prev.v) return 'Trip log inférieur au relevé du '+fmtDate(prev.date)+' ('+fmtNum(prev.v)+' milles).';
       return null;
     },
     onDelete: isEdit ? async ()=>{ deleteDoc('fuel','fuel', r.id); logHistory('fuel', r.id, 'Soutage du '+fmtDate(r.date), 'supprimé', r.vessel); toast('Soutage supprimé'); } : null,
     onSubmit: async d=>{
-      const lignes = FUEL_TANKS.map(t=>{
+      const lignes = vesselTanks(d.vessel).map(t=>{
         const q = numOrNull(d['q-'+t.k]); if(!(q>0)) return null;
         const pl = numOrNull(d['pl-'+t.k]); let pt = numOrNull(d['pt-'+t.k]);
         if(pt==null && pl!=null) pt = round2(q*pl);
@@ -7869,11 +7921,11 @@ function consoFor(vessel, from, to){
   const first = firstMeterReadingDate(vessel);
   const fuelFrom = first && first>=from ? addDays(first, 1) : from;
   const hours = {};
-  METERS.forEach(m=>{ hours[m.key] = meterRunHours(vessel, m.key, from, to); });
-  const totalHours = METERS.reduce((s,m)=>s+hours[m.key], 0);
+  vesselMeters(vessel).forEach(m=>{ hours[m.key] = meterRunHours(vessel, m.key, from, to); });
+  const totalHours = vesselMeters(vessel).reduce((s,m)=>s+hours[m.key], 0);
   const gazole = fuelLitres(vessel, 'Gazole', fuelFrom, to);
   const oil = {};
-  METERS.forEach(m=>{ oil[m.key] = fuelLitres(vessel, 'Huile moteur', fuelFrom, to, m.key); });
+  vesselMeters(vessel).forEach(m=>{ oil[m.key] = fuelLitres(vessel, 'Huile moteur', fuelFrom, to, m.key); });
   const oilTotal = fuelLitres(vessel, 'Huile moteur', fuelFrom, to);
   return {hours, totalHours, gazole, oil, oilTotal,
     rate: totalHours>=CONSO_MIN_HOURS && gazole>0 ? gazole/totalHours : null,
@@ -7955,10 +8007,10 @@ function viewConsommations(slot){
   // chiffres clés
   const tiles = el('div',{class:'grid-cards', style:'margin-bottom:14px;'});
   const tile = (k, val, sub)=>tiles.appendChild(el('div',{class:'card stat-card'}, el('div',{class:'k'}, k), el('div',{class:'v conso-v'}, val), sub ? el('div',{class:'stat-sub'}, sub) : null));
-  tile('Heures de fonctionnement', fmtNum(tot.totalHours)+' h', METERS.map(m=>m.label+' '+fmtNum(tot.hours[m.key])+' h').join(' · '));
+  tile('Heures de fonctionnement', fmtNum(tot.totalHours)+' h', vesselMeters(v).map(m=>m.label+' '+fmtNum(tot.hours[m.key])+' h').join(' · '));
   tile('Gazole reçu', fmtNum(tot.gazole)+' L', period.label);
   tile('Consommation spécifique', tot.rate!=null ? fmtNum(tot.rate,1)+' L/h' : '—', tot.rate!=null ? 'gazole ÷ heures MP bâbord + MP tribord + GE' : 'heures ou gazole insuffisants sur la période');
-  tile('Huile moteur', fmtNum(tot.oilTotal)+' L', METERS.map(m=>tot.oilRate(m.key)!=null ? m.label+' '+fmtNum(tot.oilRate(m.key),1)+' L/100 h' : null).filter(Boolean).join(' · ') || 'appoints par compteur');
+  tile('Huile moteur', fmtNum(tot.oilTotal)+' L', vesselMeters(v).map(m=>tot.oilRate(m.key)!=null ? m.label+' '+fmtNum(tot.oilRate(m.key),1)+' L/100 h' : null).filter(Boolean).join(' · ') || 'appoints par compteur');
   slot.appendChild(tiles);
 
   const monthLabel = r=>r.mb.label;
@@ -7971,18 +8023,18 @@ function viewConsommations(slot){
 
   // heures par compteur : petits graphiques identiques (même échelle de lecture, une série chacun)
   const multiples = el('div',{class:'chart-grid chart-grid-3'});
-  METERS.forEach(m=>multiples.appendChild(chartCard('Heures '+m.label, m.long+' · heures par mois',
+  vesselMeters(v).forEach(m=>multiples.appendChild(chartCard('Heures '+m.label, m.long+' · heures par mois',
     chartSVG({kind:'bar', unit:'h', height:150, width:300, ariaLabel:'Heures de fonctionnement '+m.label+' par mois', data: rows.map(r=>({label:monthLabel(r), value:r.c.hours[m.key]||null, tip:r.mb.long+' : '+fmtNum(r.c.hours[m.key])+' h '+m.label}))}))));
   slot.appendChild(multiples);
 
   // tableau des valeurs (accessibilité et vérification)
   const table = el('table',{class:'compact-table num-table'},
-    el('thead',{}, el('tr',{}, el('th',{},'Mois'), ...METERS.map(m=>el('th',{}, 'Heures '+m.label)), el('th',{},'Gazole (L)'), el('th',{},'L/h (3 mois)'), el('th',{},'Huile moteur (L)'))),
+    el('thead',{}, el('tr',{}, el('th',{},'Mois'), ...vesselMeters(v).map(m=>el('th',{}, 'Heures '+m.label)), el('th',{},'Gazole (L)'), el('th',{},'L/h (3 mois)'), el('th',{},'Huile moteur (L)'))),
     el('tbody',{}, ...rows.map(r=>el('tr',{},
       el('td',{style:'text-transform:capitalize;'}, r.mb.long),
-      ...METERS.map(m=>el('td',{}, fmtNum(r.c.hours[m.key]))),
+      ...vesselMeters(v).map(m=>el('td',{}, fmtNum(r.c.hours[m.key]))),
       el('td',{}, fmtNum(r.c.gazole)), el('td',{}, r.rate3!=null ? fmtNum(r.rate3,1) : '—'), el('td',{}, fmtNum(r.c.oilTotal))))),
-    el('tfoot',{}, el('tr',{}, el('th',{},'Total'), ...METERS.map(m=>el('th',{}, fmtNum(tot.hours[m.key]))),
+    el('tfoot',{}, el('tr',{}, el('th',{},'Total'), ...vesselMeters(v).map(m=>el('th',{}, fmtNum(tot.hours[m.key]))),
       el('th',{}, fmtNum(tot.gazole)), el('th',{}, tot.rate!=null ? fmtNum(tot.rate,1) : '—'), el('th',{}, fmtNum(tot.oilTotal)))));
   slot.appendChild(el('div',{class:'card', style:'padding:16px 18px;margin-top:14px;'},
     el('h2',{style:'font-size:15.5px;margin-bottom:8px;'}, 'Détail mensuel'), el('div',{class:'table-wrap'}, table)));
@@ -8008,7 +8060,7 @@ function viewConsommations(slot){
   const notes = [];
   const noUnit = state.fuel.filter(r=>r.vessel===v && !isLitres(r) && (r.type==='Gazole' || r.type==='Huile moteur')).length;
   if(noUnit) notes.push(noUnit+' relevé(s) de gazole ou d’huile saisi(s) dans une autre unité que le litre ne sont pas comptés.');
-  METERS.forEach(m=>{ if(!meterReadingsFor(v, m.key).length) notes.push('Aucun relevé du compteur '+m.label+' : ses heures ne sont pas calculables.'); });
+  vesselMeters(v).forEach(m=>{ if(!meterReadingsFor(v, m.key).length) notes.push('Aucun relevé du compteur '+m.label+' : ses heures ne sont pas calculables.'); });
   if(notes.length) slot.appendChild(el('div',{class:'hint', style:'margin-top:10px;'}, notes.join(' ')));
 }
 /* bilan compagnie : quantités et coûts de toute la flotte, plus les achats de la compagnie */
@@ -8269,7 +8321,7 @@ function jobHistoryRows(f){
     fuelEntries().forEach((e,i)=>{
       const q = e.compteur && e.compteur!=='aucun' ? state.equipment.find(x=>x.vessel===e.vessel && x.meter===e.compteur) : null;
       if(!q || !keep({vessel:e.vessel, equipmentId:q.id})) return;
-      rows.push({key:'f'+e.rec.id+i, type:'Carburant / huile', vessel:e.vessel, titre:e.type+(e.caisse ? ' — '+tankDef(e.caisse).l : ''), element:q.name, date:e.date||'', statut:'Entrée', par:'', note:fmtNum(e.quantite)+' '+(e.unite||'L'), open:()=>openFuelModal(e.rec)});
+      rows.push({key:'f'+e.rec.id+i, type:'Carburant / huile', vessel:e.vessel, titre:e.type+(e.caisse ? ' — '+tankDef(e.caisse, e.vessel).l : ''), element:q.name, date:e.date||'', statut:'Entrée', par:'', note:fmtNum(e.quantite)+' '+(e.unite||'L'), open:()=>openFuelModal(e.rec)});
     });
     // consommation entre deux relevés de caisses : les caisses communiquent, elle n'est pas attribuable à un seul moteur
     if(!f.element) VESSELS.filter(v=>f.vessels.includes(v.key) && (!f.groupe || state.equipment.some(x=>x.vessel===v.key && x.meter && x.categorie===f.groupe))).forEach(v=>tankRows(v.key).forEach(x=>{
@@ -8489,21 +8541,20 @@ function requestInvoiceMail(prest, works, dockTitre){
    communiquent : le suivi se fait sur le total gasoil et le total huile (bidon de réserve compris).
    Consommation entre deux relevés = total précédent + entrées − total du relevé. */
 const FUEL_LEVELS = 'Relevé caisses';
-const GO_TANKS = ['go-bd','go-td'], OIL_TANKS = ['hu-bd','hu-td','hu-aux','res-bidon'];
 function tankReadings(v){ return state.fuel.filter(r=>r.vessel===v && r.type===FUEL_LEVELS && r.niveaux).sort((a,b)=>(a.date+(a.createdAt||'')).localeCompare(b.date+(b.createdAt||''))); }
 const levelSum = (niv, keys)=>keys.reduce((s,k)=>s+(Number(niv[k])||0), 0);
 function fuelIn(v, type, after, upto, caisse){ return fuelEntries().filter(e=>e.vessel===v && e.type===type && e.date>after && e.date<=upto && isLitres(e) && (!caisse || e.caisse===caisse)).reduce((s,e)=>s+e.quantite, 0); }
 function tankRows(v){
   const list = tankReadings(v);
   return list.map((r,i)=>{
-    const p = list[i-1], go = levelSum(r.niveaux, GO_TANKS), oil = levelSum(r.niveaux, OIL_TANKS);
+    const p = list[i-1], GO_TANKS = goTanks(v), OIL_TANKS = oilTanks(v), go = levelSum(r.niveaux, GO_TANKS), oil = levelSum(r.niveaux, OIL_TANKS);
     return {r, go, oil, goConso: p ? levelSum(p.niveaux, GO_TANKS)+fuelIn(v,'Gazole',p.date,r.date)-go : null, oilConso: p ? levelSum(p.niveaux, OIL_TANKS)+fuelIn(v,'Huile moteur',p.date,r.date)-oil : null};
   });
 }
 function tankLevelsCard(v){
-  const rows = tankRows(v), last = rows[rows.length-1];
+  const rows = tankRows(v), last = rows[rows.length-1], TANKS = vesselTanks(v), GO_TANKS = goTanks(v), OIL_TANKS = oilTanks(v);
   const today = todayISO();
-  const inSince = t=>last ? fuelIn(v, tankDef(t.k).type, last.r.date, today, t.k) : 0;
+  const inSince = t=>last ? fuelIn(v, tankDef(t.k, v).type, last.r.date, today, t.k) : 0;
   const n = x=>x==null ? '—' : fmtNum(x);
   const card = el('div',{class:'card', style:'padding:16px 18px;margin-bottom:14px;', 'data-fk':'caisses'},
     el('div',{class:'section-head', style:'margin-bottom:6px;'}, el('h2',{style:'font-size:15.5px;margin:0;'}, 'Caisses et réserve'),
@@ -8512,15 +8563,15 @@ function tankLevelsCard(v){
   const estTotal = keys=>keys.reduce((s,k)=>s+(last ? (Number(last.r.niveaux[k])||0)+inSince({k}) : 0), 0);
   card.appendChild(el('div',{class:'table-wrap'}, el('table',{class:'compact-table num-table'},
     el('thead',{}, el('tr',{}, ...['Caisse','Dernier relevé (L)','Soutages depuis (L)','Estimé (L)'].map(h=>el('th',{}, h)))),
-    el('tbody',{}, ...FUEL_TANKS.map(t=>el('tr',{}, el('td',{style:'font-weight:600;'}, t.l), el('td',{}, last ? n(last.r.niveaux[t.k]) : '—'), el('td',{}, last ? n(inSince(t)) : '—'), el('td',{}, last ? n((Number(last.r.niveaux[t.k])||0)+inSince(t)) : '—')))),
-    el('tfoot',{}, el('tr',{}, el('th',{}, 'Total gasoil'), el('th',{}, last ? n(last.go) : '—'), el('th',{}), el('th',{}, last ? n(estTotal(GO_TANKS)) : '—')),
+    el('tbody',{}, ...TANKS.map(t=>el('tr',{}, el('td',{style:'font-weight:600;'}, t.l), el('td',{}, last ? n(last.r.niveaux[t.k]) : '—'), el('td',{}, last ? n(inSince(t)) : '—'), el('td',{}, last ? n((Number(last.r.niveaux[t.k])||0)+inSince(t)) : '—')))),
+    el('tfoot',{}, el('tr',{}, el('th',{}, GO_TANKS.length>1 ? 'Total gasoil' : 'Gasoil'), el('th',{}, last ? n(last.go) : '—'), el('th',{}), el('th',{}, last ? n(estTotal(GO_TANKS)) : '—')),
       el('tr',{}, el('th',{}, 'Total huile (réserve comprise)'), el('th',{}, last ? n(last.oil) : '—'), el('th',{}), el('th',{}, last ? n(estTotal(OIL_TANKS)) : '—'))))));
   if(rows.length) card.appendChild(el('details',{style:'margin-top:10px;'}, el('summary',{}, 'Historique des relevés ('+rows.length+')'),
     el('div',{class:'table-wrap'}, el('table',{class:'compact-table num-table', 'data-fk':'releves-caisses'},
-      el('thead',{}, el('tr',{}, ...['Date', ...FUEL_TANKS.map(t=>t.l), 'Total gasoil','Conso gasoil','Total huile','Conso huile','Compteurs'].map(h=>el('th',{}, h)))),
-      el('tbody',{}, ...rows.slice().reverse().map(x=>el('tr',{class:'row-click', 'data-fk':'releve-'+x.r.id, onclick:()=>openTankLevelModal(v, x.r)}, el('td',{style:'white-space:nowrap;'}, fmtDate(x.r.date)), ...FUEL_TANKS.map(t=>el('td',{}, n(x.r.niveaux[t.k]))),
+      el('thead',{}, el('tr',{}, ...['Date', ...TANKS.map(t=>t.l), 'Total gasoil','Conso gasoil','Total huile','Conso huile','Compteurs'].map(h=>el('th',{}, h)))),
+      el('tbody',{}, ...rows.slice().reverse().map(x=>el('tr',{class:'row-click', 'data-fk':'releve-'+x.r.id, onclick:()=>openTankLevelModal(v, x.r)}, el('td',{style:'white-space:nowrap;'}, fmtDate(x.r.date)), ...TANKS.map(t=>el('td',{}, n(x.r.niveaux[t.k]))),
         el('td',{style:'font-weight:700;'}, n(x.go)), el('td',{}, n(x.goConso)), el('td',{style:'font-weight:700;'}, n(x.oil)), el('td',{}, n(x.oilConso)),
-        el('td',{}, METERS.filter(m=>x.r.compteurs && x.r.compteurs[m.key]!=null).map(m=>m.label+' '+fmtHours(x.r.compteurs[m.key])).join(' · ')||'—'))))))));
+        el('td',{}, vesselMeters(v).filter(m=>x.r.compteurs && x.r.compteurs[m.key]!=null).map(m=>m.label+' '+fmtHours(x.r.compteurs[m.key])).join(' · ')||'—'))))))));
   return card;
 }
 function openTankLevelModal(v, r){
@@ -8528,20 +8579,20 @@ function openTankLevelModal(v, r){
   const from = r ? r.niveaux : (prev ? prev.niveaux : {});
   const body = el('div',{},
     field('Date du relevé','date','date', null, r ? r.date : todayISO()),
-    el('div',{class:'field-row'}, ...FUEL_TANKS.map(t=>field(t.l+' (L)','n-'+t.k,'number', null, from[t.k] ?? ''))),
+    el('div',{class:'field-row'}, ...vesselTanks(v).map(t=>field(t.l+' (L)','n-'+t.k,'number', null, from[t.k] ?? ''))),
     el('div',{class:'field-label', style:'margin-top:6px;'}, 'Compteurs horaires (facultatif)'),
-    el('div',{class:'field-row'}, ...METERS.map(m=>field(m.label+' (h)','c-'+m.key,'number', null, r && r.compteurs ? r.compteurs[m.key] ?? '' : ''))),
+    el('div',{class:'field-row'}, ...vesselMeters(v).map(m=>field(m.label+' (h)','c-'+m.key,'number', null, r && r.compteurs ? r.compteurs[m.key] ?? '' : ''))),
     field('Notes','notes','text', null, r ? r.notes||'' : ''));
   openModal({title:'Relevé des caisses — '+vesselName(v), body, wide:true, readOnly: r ? !canEdit() : !canInput(),
-    validate: d=>!d.date ? 'La date est obligatoire.' : FUEL_TANKS.some(t=>d['n-'+t.k]==='' || !(Number(d['n-'+t.k])>=0)) ? 'Indiquez le niveau de chaque caisse et de la réserve.' : null,
+    validate: d=>!d.date ? 'La date est obligatoire.' : vesselTanks(v).some(t=>d['n-'+t.k]==='' || !(Number(d['n-'+t.k])>=0)) ? 'Indiquez le niveau de chaque caisse et de la réserve.' : null,
     onDelete: isEdit ? async ()=>{ deleteDoc('fuel','fuel', r.id); logHistory('fuel', r.id, FUEL_LEVELS, 'supprimé', v); toast('Relevé supprimé'); } : null,
     onSubmit: async d=>{
       const niveaux = {}, compteurs = {};
-      FUEL_TANKS.forEach(t=>{ niveaux[t.k] = Number(d['n-'+t.k]); });
-      METERS.forEach(m=>{ if(d['c-'+m.key]!==''){ compteurs[m.key] = Number(d['c-'+m.key]); updateVesselMeterIfHigher(v, compteurs[m.key], 'relevé des caisses', m.key, d.date); } });
+      vesselTanks(v).forEach(t=>{ niveaux[t.k] = Number(d['n-'+t.k]); });
+      vesselMeters(v).forEach(m=>{ if(d['c-'+m.key]!==''){ compteurs[m.key] = Number(d['c-'+m.key]); updateVesselMeterIfHigher(v, compteurs[m.key], 'relevé des caisses', m.key, d.date); } });
       const data = {vessel:v, date:d.date, type:FUEL_LEVELS, niveaux, compteurs, notes:d.notes};
       if(isEdit){ updateDoc('fuel','fuel', r.id, data); logHistory('fuel', r.id, FUEL_LEVELS+' du '+fmtDate(d.date), 'modifié', v); }
-      else{ const id = addDoc('fuel','fuel', data); logHistory('fuel', id, FUEL_LEVELS+' du '+fmtDate(d.date), 'ajouté', v, 'gasoil '+fmtNum(levelSum(niveaux, GO_TANKS))+' L · huile '+fmtNum(levelSum(niveaux, OIL_TANKS))+' L'); }
+      else{ const id = addDoc('fuel','fuel', data); logHistory('fuel', id, FUEL_LEVELS+' du '+fmtDate(d.date), 'ajouté', v, 'gasoil '+fmtNum(levelSum(niveaux, goTanks(v)))+' L · huile '+fmtNum(levelSum(niveaux, oilTanks(v)))+' L'); }
       toast('Relevé enregistré', 'success');
     }});
 }
@@ -9192,7 +9243,7 @@ function buildReport(o, range){
   if(S.realises) section('Jobs récurrents réalisés', table([
     ['Date', x=>fmtDate(x.c.date)], ...(multi ? [['Navire', x=>vesselName(x.t.vessel)]] : []), ['Job', x=>x.t.task], ['Catégorie', x=>x.t.category],
     ['Élément', x=>equipLabel(x.t)||'—'], ['Par', x=>x.c.by||'—'],
-    ['Compteur', x=>x.c.heures!=null ? meterLabel(x.t.meter)+' '+fmtHours(x.c.heures) : '—'], ['Commentaire', x=>x.c.commentaire||'—']], regular));
+    ['Compteur', x=>x.c.heures!=null ? meterLabel(x.t.meter, x.t.vessel)+' '+fmtHours(x.c.heures) : '—'], ['Commentaire', x=>x.c.commentaire||'—']], regular));
   if(S.drills) section('Exercices & drills réalisés', table([
     ['Date', x=>fmtDate(x.c.date)], ...(multi ? [['Navire', x=>vesselName(x.t.vessel)]] : []), ['Exercice', x=>x.t.task], ['Par', x=>x.c.by||'—'],
     ['Compte rendu', x=>x.c.commentaire||'—'], ['Rapport joint', x=>(x.c.attachments||[]).map(a=>a.name).join(', ')||'—']], drills,
@@ -9218,7 +9269,7 @@ function buildReport(o, range){
   }
   if(S.compteurs){
     const rows = [];
-    vessels.forEach(v=>METERS.forEach(m=>{
+    vessels.forEach(v=>vesselMeters(v).forEach(m=>{
       const rs = meterReadingsFor(v, m.key).filter(r=>r.date>=from && r.date<=to);
       rows.push({vessel:v, m, hours: meterRunHours(v, m.key, from, to), current: vesselMeter(v, m.key), n: rs.length,
         resets: rs.filter(r=>r.type==='reset').map(r=>fmtDate(r.date)+' ('+fmtHours(r.heuresAvant)+' → '+fmtHours(r.heures)+(r.note?', '+r.note:'')+')').join(' ; ')});
@@ -9570,7 +9621,7 @@ function viewBord(slot){
 
   // compteurs
   const meters = el('div',{class:'bord-meters'});
-  METERS.forEach(m=>{
+  vesselMeters(v).forEach(m=>{
     const val = vesselMeter(v, m.key), last = meterReadingsFor(v, m.key)[0];
     meters.appendChild(el('button',{type:'button', class:'bord-meter', disabled: canInput() ? null : '', 'aria-label':'Relever le compteur '+m.label+' ('+fmtHours(val)+')',
       onclick:()=>openMeterModal(v, m.key)},
@@ -12342,7 +12393,7 @@ function downloadFile(filename, data, type){
 const CSV_EXPORTS = [
   {key:'tasks', label:'Jobs récurrents', cols:[
     {label:'Navire', get:r=>vesselName(r.vessel)}, {label:'Catégorie', key:'category'}, {label:'Job', key:'task'},
-    {label:'Élément', get:r=>equipLabel(r)||''}, {label:'Suivi', get:r=>r.unit==='heures'?'Compteur '+meterLabel(r.meter):'Date'},
+    {label:'Élément', get:r=>equipLabel(r)||''}, {label:'Suivi', get:r=>r.unit==='heures'?'Compteur '+meterLabel(r.meter, r.vessel):'Date'},
     {label:'Périodicité', key:'periodicity'}, {label:'Dernière', key:'lastDate'}, {label:'Prochaine', key:'nextDate'},
     {label:'Heures au dernier entretien', key:'hoursAtLast'}, {label:'Cycle (h)', key:'cycleHours'},
     {label:'Réalisations', get:r=>(r.completions||[]).length}, {label:'Observations', key:'observations'}
@@ -12380,11 +12431,11 @@ const CSV_EXPORTS = [
     {label:'Quantité', get:r=>Array.isArray(r.lignes) ? fuelRecordLitres(r) : r.quantite}, {label:'Unité', key:'unite'},
     {label:'Prix au litre (€)', get:r=>Array.isArray(r.lignes) ? '' : r.prixLitre ?? ''}, {label:'Prix total (€)', get:r=>{ const c = fuelRecordCost(r); return c!=null ? round2(c) : ''; }},
     {label:'Fournisseur', key:'fournisseur'}, {label:'Trip log (milles)', key:'tripLog'},
-    {label:'Compteur', get:r=>r.compteurHeures!=null&&r.compteurHeures!==''?meterLabel(r.compteur):''}, {label:'Compteur (h)', key:'compteurHeures'},
+    {label:'Compteur', get:r=>r.compteurHeures!=null&&r.compteurHeures!==''?meterLabel(r.compteur, r.vessel):''}, {label:'Compteur (h)', key:'compteurHeures'},
     {label:'Factures', get:r=>(r.attachments||[]).map(a=>a.name).join(' ; ')}, {label:'Notes', key:'notes'}
   ]},
   {key:'meterReadings', label:'Relevés des compteurs', cols:[
-    {label:'Navire', get:r=>vesselName(r.vessel)}, {label:'Compteur', get:r=>meterLabel(r.meter)}, {label:'Date', key:'date'},
+    {label:'Navire', get:r=>vesselName(r.vessel)}, {label:'Compteur', get:r=>meterLabel(r.meter, r.vessel)}, {label:'Date', key:'date'},
     {label:'Type', get:r=>r.type==='reset'?'Remise à zéro':r.type==='reprise'?'Reprise':'Relevé'},
     {label:'Valeur (h)', key:'heures'}, {label:'Valeur avant remise à zéro (h)', key:'heuresAvant'}, {label:'Par', key:'by'}, {label:'Origine', key:'source'}, {label:'Remarque', key:'note'}
   ]},
@@ -12531,7 +12582,7 @@ function exportSpecPdf(spec){ printSheet(buildExportSheet(spec)); }
    APP_BUILD est inscrit à la publication (tools/preparer-deploiement.ps1) :
    « aaaammjj-hhmm-empreinte ». Fichier ouvert en local : version non numérotée.
    La recherche de mise à jour lit version.json sur le site publié. */
-const APP_BUILD = '20261108-2049-e3f8d8f4f582';
+const APP_BUILD = '20261110-1721-299b2b1f2913';
 function appBuildInfo(build){
   const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(?:-(\w+))?/.exec(build||'');
   return m ? {build, date:m[1]+'-'+m[2]+'-'+m[3], time:m[4]+':'+m[5], label:m[3]+'/'+m[2]+'/'+m[1]+' à '+m[4]+'h'+m[5]} : null;
@@ -15292,7 +15343,7 @@ autotest('Planning journalier', 'codes du classeur reconnus (précisions et alia
   expect.equal(t('cp pater'), 'CPATER|'); expect.equal(t('congés pater période facultative'), 'CPATER|période facultative');
   expect.equal(t('QUICK am/M AM'), 'QCK|am/M AM'); expect.equal(t('MED II'), 'MED|'); expect.equal(t('Kernivilit'), 'KERN|');
   expect.equal(t('Retour Arcachon'), '|Retour Arcachon', 'texte libre : code vide, gardé en précision');
-  expect.ok(parseSnapshot(fileText({version:9})).crewPlan.length===0 && SCHEMA_VERSION===12, 'format 12');
+  expect.ok(parseSnapshot(fileText({version:9})).crewPlan.length===0 && SCHEMA_VERSION===13, 'format 13');
 });
 autotest('Planning journalier', 'tableau marins × jours : remplissage au pinceau, filtre navire, organisation des navires', async ()=>{
   const {h, pl, days} = planFixture();
@@ -16902,25 +16953,25 @@ autotest('Effets visuels', 'Ker Bossy : photo d’illustration du navire', ()=>{
 });
 autotest('Compteurs', 'tendances : courbe dans le temps coupée à la remise à zéro, heures par mois, moyenne par jour', async ()=>{
   const d = k=>addDays(todayISO(), -k);
-  recordMeterReading('viga', 'mp1', 1000, {date:d(120)});
-  recordMeterReading('viga', 'mp1', 1300, {date:d(60)});
-  resetMeter('viga', 'mp1', 0, 'compteur remplacé', d(40));
-  recordMeterReading('viga', 'mp1', 150, {date:d(10)});
-  const pts = meterSeries('viga', 'mp1');
+  recordMeterReading('men-du', 'mp1', 1000, {date:d(120)});
+  recordMeterReading('men-du', 'mp1', 1300, {date:d(60)});
+  resetMeter('men-du', 'mp1', 0, 'compteur remplacé', d(40));
+  recordMeterReading('men-du', 'mp1', 150, {date:d(10)});
+  const pts = meterSeries('men-du', 'mp1');
   expect.equal(pts.map(p=>p.v).join(','), '1000,1300,1300,0,150', 'valeur avant et après la remise à zéro');
   expect.equal(pts.filter(p=>p.brk).length, 1);
   const chart = timeChartSVG({points:pts, unit:'h', ariaLabel:'test'});
   expect.equal(chart.querySelector('path.chart-line').getAttribute('d').split('M').length-1, 2, 'deux segments');
-  expect.ok(meterDailyAverage('viga', 'mp1', 90) > 0, 'moyenne par jour');
+  expect.ok(meterDailyAverage('men-du', 'mp1', 90) > 0, 'moyenne par jour');
   // relevé puis remise à zéro enregistrés à la même milliseconde : pas d'heures fantômes
   patch(Date.prototype, 'toISOString', function(){ return '2026-01-15T10:00:00.000Z'; });
   recordMeterReading('quehan', 'dg', 500, {date:'2026-01-10'}); recordMeterReading('quehan', 'dg', 520, {date:'2026-01-15'}); resetMeter('quehan', 'dg', 0, 'test', '2026-01-15');
   testRestores.pop()();
   expect.equal(meterRunHours('quehan', 'dg', '2026-01-01', '2026-01-31'), 20, 'ordre d’enregistrement respecté');
-  openMeterHistory('viga', 'mp1');
+  openMeterHistory('men-du', 'mp1');
   expect.ok($('.modal [data-fk=tendances-mp1] svg path.chart-line') && $('.modal table'), 'courbe et tableau dans l’historique');
   closeAllModals();
-  state.activeVessel = 'viga'; render(); state.route = '#/entretien'; renderContent();
+  state.activeVessel = 'men-du'; render(); state.route = '#/entretien'; renderContent();
   $('#content-slot [data-fk=compteurs-tendances]').click();
   expect.equal($$('.modal .meter-trends').length, METERS.length, 'tendances des trois compteurs');
   $('.modal [data-fk=tendances-periode]').value = '6'; $('.modal [data-fk=tendances-periode]').dispatchEvent(new Event('change'));
@@ -17244,14 +17295,14 @@ autotest('Heures', 'saisie : la personne et l’administrateur ; capitaine en le
 autotest('Carburant', 'relevés de caisses : totaux gasoil et huile, soutage compté, consommation sur le total', async ()=>{
   addDoc('users','users',{nom:'A', role:'admin'}); prefStore.setItem('sw_profile_id', state.users[0].id);
   const niv = (bd, td)=>({'go-bd':bd, 'go-td':td, 'hu-bd':10, 'hu-td':10, 'hu-aux':5, 'res-bidon':20});
-  addDoc('fuel','fuel',{vessel:'viga', date:'2026-05-01', type:FUEL_LEVELS, niveaux:niv(1000, 500)});
-  addDoc('fuel','fuel',{vessel:'viga', date:'2026-05-03', lignes:[{caisse:'go-bd', quantite:200}]});
-  addDoc('fuel','fuel',{vessel:'viga', date:'2026-05-05', type:FUEL_LEVELS, niveaux:niv(600, 900)});
-  const rows = tankRows('viga');
+  addDoc('fuel','fuel',{vessel:'men-du', date:'2026-05-01', type:FUEL_LEVELS, niveaux:niv(1000, 500)});
+  addDoc('fuel','fuel',{vessel:'men-du', date:'2026-05-03', lignes:[{caisse:'go-bd', quantite:200}]});
+  addDoc('fuel','fuel',{vessel:'men-du', date:'2026-05-05', type:FUEL_LEVELS, niveaux:niv(600, 900)});
+  const rows = tankRows('men-du');
   expect.equal(rows[1].go, 1500); expect.equal(rows[1].oil, 45, 'huile, réserve comprise');
   expect.equal(rows[1].goConso, 200, 'report entre caisses neutre : 1500 + 200 − 1500');
   expect.ok(!fuelEntries().some(e=>e.type===FUEL_LEVELS), 'le relevé n’est pas une entrée');
-  state.activeVessel = 'viga'; render(); state.route = '#/carburant'; renderContent();
+  state.activeVessel = 'men-du'; render(); state.route = '#/carburant'; renderContent();
   expect.ok($('#content-slot [data-fk=caisses]').textContent.includes('Bidon de réserve'));
   $('#content-slot [data-fk=releve-caisses]').click();
   expect.equal($('.modal [name="n-go-bd"]').value, '600', 'reprend le dernier relevé');
@@ -17289,8 +17340,8 @@ autotest('Arrêts techniques', 'travaux détaillés, facture pour plusieurs trav
   expect.equal(d.factures[0].travauxIds.length, 2, 'une facture, deux travaux');
 });
 autotest('Éléments', 'format 12 : arborescence par défaut sur chaque navire, sans doublon', ()=>{
-  const obj = parseSnapshot(fileText({version:11, equipment:[{id:'x', vessel:'viga', name:'moteur babord', categorie:'Propulsion'}]}));
-  expect.equal(obj.equipment.filter(e=>e.vessel==='viga').length, 10, 'élément existant non doublé');
+  const obj = parseSnapshot(fileText({version:11, equipment:[{id:'x', vessel:'quehan', name:'moteur babord', categorie:'Propulsion'}]}));
+  expect.equal(obj.equipment.filter(e=>e.vessel==='quehan').length, 10, 'élément existant non doublé');
   expect.equal(obj.equipment.filter(e=>e.vessel==='men-du').length, 10);
   expect.equal(obj.equipment.find(e=>e.vessel==='men-du' && e.name==='Grue').categorie, 'Auxiliaire');
   expect.equal(obj.equipment.find(e=>e.id==='x').categorie, 'Propulsion', 'catégorie existante conservée');
@@ -17338,14 +17389,14 @@ autotest('Éléments', 'historique d’une catégorie ou d’un élément : jobs
 });
 autotest('Éléments', 'historique : carburant et huile par compteur, consommation des caisses au niveau de la catégorie', ()=>{
   const obj = parseSnapshot(fileText({version:11}));
-  expect.equal(obj.equipment.find(e=>e.vessel==='viga' && e.name==='Moteur tribord').meter, 'mp2', 'compteur par défaut');
+  expect.equal(obj.equipment.find(e=>e.vessel==='men-du' && e.name==='Moteur tribord').meter, 'mp2', 'compteur par défaut');
   expect.ok(obj.equipment.some(e=>e.name==='LiLAA bâbord') && obj.equipment.some(e=>e.name==='LiLAA tribord'), 'nom LiLAA');
-  const m1 = addDoc('equipment','equipment',{vessel:'viga', name:'Moteur bâbord', categorie:'Moteurs', meter:'mp1'});
-  const m2 = addDoc('equipment','equipment',{vessel:'viga', name:'Moteur tribord', categorie:'Moteurs', meter:'mp2'});
-  addDoc('fuel','fuel',{vessel:'viga', date:'2026-05-02', type:'Huile moteur', quantite:12, unite:'L', compteur:'mp1'});
+  const m1 = addDoc('equipment','equipment',{vessel:'men-du', name:'Moteur bâbord', categorie:'Moteurs', meter:'mp1'});
+  const m2 = addDoc('equipment','equipment',{vessel:'men-du', name:'Moteur tribord', categorie:'Moteurs', meter:'mp2'});
+  addDoc('fuel','fuel',{vessel:'men-du', date:'2026-05-02', type:'Huile moteur', quantite:12, unite:'L', compteur:'mp1'});
   const niv = (bd, td)=>({'go-bd':bd, 'go-td':td, 'hu-bd':10, 'hu-td':10, 'hu-aux':5, 'res-bidon':20});
-  addDoc('fuel','fuel',{vessel:'viga', date:'2026-05-01', type:FUEL_LEVELS, niveaux:niv(1000, 500)});
-  addDoc('fuel','fuel',{vessel:'viga', date:'2026-05-05', type:FUEL_LEVELS, niveaux:niv(600, 700)});
+  addDoc('fuel','fuel',{vessel:'men-du', date:'2026-05-01', type:FUEL_LEVELS, niveaux:niv(1000, 500)});
+  addDoc('fuel','fuel',{vessel:'men-du', date:'2026-05-05', type:FUEL_LEVELS, niveaux:niv(600, 700)});
   const rows = f=>jobHistoryRows({...jobHistoryDefaults(), ...f}).filter(r=>r.type.startsWith('Carburant') || r.type==='Consommation carburant');
   expect.equal(rows({element:m1}).length, 1, 'appoint rattaché au moteur bâbord');
   expect.equal(rows({element:m2}).length, 0, 'rien sur le moteur tribord');
@@ -17389,9 +17440,42 @@ autotest('Pièces jointes', 'photo prise dans la fiche, sans quitter l’applica
   expect.equal(system, 1, 'sans caméra intégrée : appareil photo du système');
   closeAllModals();
 });
+autotest('Carburant', 'Viga : un moteur principal, une caisse MDO, deux caisses d’huile ; fenêtres adaptées au navire', async ()=>{
+  addDoc('users','users',{nom:'A', role:'admin'}); prefStore.setItem('sw_profile_id', state.users[0].id);
+  expect.equal(vesselMeters('viga').map(m=>m.key+':'+m.label).join('|'), 'mp1:MP|dg:GE');
+  expect.equal(vesselMeters('men-du').length, 3, 'autres navires inchangés');
+  expect.equal(vesselTanks('viga').map(t=>t.l).join('|'), 'Caisse MDO|Huile propulsion|Huile auxiliaire|Bidon de réserve');
+  expect.equal(meterLabel('mp1', 'viga'), 'MP'); expect.equal(meterLabel('mp1', 'men-du'), 'MP bâbord');
+  state.activeVessel = 'viga'; render(); state.route = '#/bord'; renderContent();
+  expect.equal($$('#content-slot .bord-meter').length, 2, 'deux compteurs à bord du Viga');
+  openSoutageModal(null, {vessel:'viga'});
+  const shown = ()=>$$('.modal tr[data-caisse]').filter(tr=>!tr.hidden).map(tr=>tr.dataset.caisse).join('|');
+  expect.equal(shown(), 'go-bd|hu-bd|hu-aux|res-bidon', 'soutage : caisses du Viga');
+  expect.equal($('.modal tr[data-caisse=go-bd] th').textContent, 'Caisse MDO');
+  expect.equal([...$('.modal [name=compteur]').options].map(o=>o.value).join('|'), 'mp1|dg');
+  const vs = $('.modal [name=vessel]'); vs.value = 'men-du'; vs.dispatchEvent(new Event('change'));
+  expect.equal(shown(), 'go-bd|go-td|hu-bd|hu-td|hu-aux|res-bidon', 'autre navire : toutes ses caisses');
+  vs.value = 'viga'; vs.dispatchEvent(new Event('change'));
+  fillModal({'q-go-bd':'500'}); $('.modal [name="q-go-td"]').value = '99'; confirmTopModal(); await tick(30);
+  const s = state.fuel.find(r=>r.type===FUEL_SOUTAGE);
+  expect.equal(s.lignes.map(l=>l.caisse).join('|'), 'go-bd', 'caisse masquée ignorée');
+  openTankLevelModal('viga');
+  expect.equal($$('.modal [name^="n-"]').map(i=>i.name).join('|'), 'n-go-bd|n-hu-bd|n-hu-aux|n-res-bidon', 'relevé : 4 niveaux');
+  expect.equal($$('.modal [name^="c-"]').length, 2, 'relevé : 2 compteurs');
+  closeAllModals();
+  state.route = '#/autotest';
+});
+autotest('Éléments', 'format 13 : le Viga n’a qu’un moteur principal et un seul LiLAA', ()=>{
+  const free = parseSnapshot(fileText({version:12, equipment:[{id:'b', vessel:'viga', name:'Moteur bâbord', meter:'mp1'}, {id:'t', vessel:'viga', name:'Moteur tribord', meter:'mp2'}, {id:'m', vessel:'men-du', name:'Moteur tribord', meter:'mp2'},
+    {id:'lb', vessel:'viga', name:'LiLAA bâbord'}, {id:'lt', vessel:'viga', name:'LiLAA tribord'}]}));
+  expect.equal(free.equipment.filter(e=>e.vessel==='viga').map(e=>e.name).join('|'), 'Moteur principal|LiLAA', 'tribords retirés, bâbords renommés');
+  expect.ok(free.equipment.some(e=>e.vessel==='men-du' && e.name==='Moteur tribord'), 'autres navires inchangés');
+  const used = parseSnapshot(fileText({version:12, equipment:[{id:'t', vessel:'viga', name:'Moteur tribord', meter:'mp2'}], jobs:[{id:'j', vessel:'viga', titre:'x', equipmentId:'t'}]}));
+  expect.ok(used.equipment.some(e=>e.id==='t' && !e.meter), 'gardé s’il est relié, sans compteur');
+});
 autotest('Paramètres', 'version affichée avec sa date, recherche de mise à jour (version publiée plus récente)', async ()=>{
   expect.ok(appBuildInfo('20261024-1203-ff54f95a493b').label==='24/10/2026 à 12h03', 'date lue dans la version');
-  expect.equal(appBuildInfo('20261108-2049-e3f8d8f4f582'), null, 'fichier non publié');
+  expect.equal(appBuildInfo('20261110-1721-299b2b1f2913'), null, 'fichier non publié');
   render(); state.route = '#/parametres'; renderContent();
   const card = $('#content-slot [data-fk=carte-version]');
   expect.ok(card && $('[data-fk=version-app]', card).textContent.length>0, 'carte Version et mises à jour');
