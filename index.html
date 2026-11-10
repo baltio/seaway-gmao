@@ -279,6 +279,11 @@ a.user-chip:focus-visible{outline:2px solid var(--focus);outline-offset:2px;}
 /* recherche globale */
 .top-search{position:relative;z-index:2;display:inline-flex;align-items:center;gap:8px;margin-left:auto;padding:6px 12px;border-radius:20px;border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.08);color:#fff;font:inherit;font-size:13px;cursor:pointer;}
 .top-search:hover{background:rgba(255,255,255,.16);}
+.top-bell{position:relative;z-index:2;display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;margin-left:8px;border-radius:50%;border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.08);color:inherit;text-decoration:none;flex-shrink:0;}
+.top-bell:hover{background:rgba(255,255,255,.16);}
+.top-bell:focus-visible{outline:2px solid var(--focus);outline-offset:2px;}
+.top-bell-count{position:absolute;top:-4px;right:-4px;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:#D93B30;color:#fff;font:700 11px/18px system-ui,sans-serif;text-align:center;box-shadow:0 0 0 2px rgba(0,0,0,.25);}
+.top-bell-count[hidden]{display:none;}
 .top-search kbd{font:600 10.5px system-ui, sans-serif;opacity:.7;border:1px solid rgba(255,255,255,.3);border-radius:4px;padding:1px 5px;}
 @media (max-width:700px){ .top-search-label, .top-search kbd{display:none;} }
 .low-stock{padding:12px 16px;margin-bottom:12px;border-left:4px solid var(--warning);}
@@ -3533,7 +3538,29 @@ function fileAlerts(){
         + (state.fileHandle && !state.fileError ? 'Vos données restent enregistrées dans le fichier connecté.' : 'Exportez vos données maintenant pour ne rien perdre.'),
       actions: state.fileHandle && !state.fileError ? [] : [{label:'Exporter maintenant', onclick:()=>downloadJSON()}]});
   }
+  const up = state._update;
+  if(up && up.newer && !state._updateLater && notifEnabled('maj')){
+    out.push({level:'warning', key:'maj',
+      text:'Nouvelle version de l’application disponible'+(up.theirs ? ' (publiée le '+up.theirs.label+')' : '')+'. Vos données ne sont pas touchées par la mise à jour.',
+      actions:[{label:'Mettre à jour', onclick:applyUpdate}, {label:'Plus tard', onclick:()=>{ state._updateLater = true; renderFileAlerts(); }}]});
+  }
   return out;
+}
+/* recherche automatique de mise à jour (version en ligne) : peu après l'ouverture, puis toutes les 30 minutes
+   et au retour sur l'application ; un bandeau prévient si une version plus récente est publiée */
+const UPDATE_CHECK_MS = 30*60*1000;
+async function autoCheckForUpdate(){
+  if(Date.now() - (autoCheckForUpdate.last||0) < UPDATE_CHECK_MS/2) return;
+  autoCheckForUpdate.last = Date.now();
+  const was = !!(state._update && state._update.newer);
+  const res = await checkForUpdate(false).catch(()=>null);
+  if(res && res.newer && !was){ renderFileAlerts(); renderBell(); if(state.route.startsWith('#/notifications') || state.route.startsWith('#/parametres')) renderContent(); }
+}
+function scheduleUpdateChecks(){
+  if(!IS_HOSTED || TEST_MODE) return;
+  setTimeout(autoCheckForUpdate, 15000);
+  setInterval(autoCheckForUpdate, UPDATE_CHECK_MS);
+  document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible') autoCheckForUpdate(); });
 }
 function renderFileAlerts(){
   const box = $('#file-alert-slot');
@@ -4173,6 +4200,8 @@ function shell(){
     el('button',{id:'net-pill', class:'net-pill', type:'button', hidden:'', 'aria-live':'polite', 'aria-label':'État de la connexion et des saisies en attente', 'data-fk':'etat-reseau', onclick:()=>{ if(isOnline() && hasSharedLocation()) syncNow(); else openLocationModal(); }}),
     el('button',{class:'top-search', type:'button', 'aria-label':'Rechercher dans tous les modules (Ctrl+K)', title:'Rechercher (Ctrl+K)', 'data-fk':'ouvrir-recherche', onclick:openGlobalSearch},
       el('span',{html:iconSearch()}), el('span',{class:'top-search-label'}, 'Rechercher'), el('kbd',{}, 'Ctrl K')),
+    el('a',{id:'notif-bell', class:'top-bell', href:'#/notifications', 'data-fk':'cloche', 'aria-label':'Notifications', title:'Notifications'},
+      el('span',{html:iconBell(18), 'aria-hidden':'true'}), el('span',{class:'top-bell-count', 'aria-hidden':'true', hidden:''})),
     seaBand()
   );
   main.appendChild(topbar);
@@ -4183,6 +4212,7 @@ function shell(){
   renderShellUser();
   renderFileAlerts();
   renderNetPill();
+  renderBell();
 }
 function renderChrome(){
   $$('.sidebar').forEach(s=>s.classList.toggle('open', state.sidebarOpen));
@@ -4253,8 +4283,25 @@ function render(){
   applyVesselTheme();
   const slot = $('#content-slot'); if(slot) markPageEnter(slot);
 }
+/* cloche du bandeau : messages non lus, échéances en retard ou du jour, mise à jour de l'application */
+function notificationCount(){
+  let n = 0;
+  try{ n += unreadForBell(); }catch(e){}
+  try{ n += notifItems(0).filter(i=>i.when==='retard' || i.when==='aujourdhui').length; }catch(e){}
+  if(state._update && state._update.newer && notifEnabled('maj')) n++;
+  return n;
+}
+function renderBell(){
+  const b = $('#notif-bell');
+  if(!b) return;
+  const n = notificationCount(), c = $('.top-bell-count', b);
+  c.textContent = n>99 ? '99+' : String(n); c.hidden = !n;
+  b.setAttribute('aria-label', n ? 'Notifications : '+n+' à voir' : 'Notifications : rien de nouveau');
+  b.classList.toggle('active', state.route.startsWith('#/notifications'));
+}
 function renderContent(){
   keepingFocus(drawContent);
+  renderBell();
   applyVesselTheme();
   const slot = $('#content-slot'); if(slot) markPageEnter(slot);
 }
@@ -8400,11 +8447,24 @@ function myNotifications(){
 function unreadNotifications(){ const me = notifReader(); return myNotifications().filter(n=>!(n.readBy||[]).includes(me)); }
 function markNotificationRead(n){ const me = notifReader(); if(!(n.readBy||[]).includes(me)) updateDoc('notifications','notifications', n.id, {readBy:[...(n.readBy||[]), me]}); }
 const NOTIF_EXTRA_TYPES = [['crewCerts','Certificats marins'], ['documents','Révisions de documents'], ['equipage','Embarquements']];
-function notifDelays(){ try{ return JSON.parse(prefStore.getItem('sw_notif_delays')||'{}')||{}; }catch(e){ return {}; } }
+/* réglages des notifications : propres à chaque utilisateur sur chaque appareil (un marin ne change pas ceux
+   d'un autre sur une tablette partagée). Valeur par type : nombre de jours, ou « off » = catégorie désactivée. */
+const notifPrefKey = ()=>'sw_notif_delays:'+notifReader();
+function notifDelays(){
+  try{ const own = prefStore.getItem(notifPrefKey()); return JSON.parse(own!=null ? own : (prefStore.getItem('sw_notif_delays')||'{}'))||{}; }catch(e){ return {}; }
+}
+function saveNotifDelays(o){ prefStore.setItem(notifPrefKey(), JSON.stringify(o)); }
 function notifDelay(type, fallback){ const n = Number(notifDelays()[type]); return n>0 ? n : fallback; }
+const notifEnabled = type=>notifDelays()[type]!=='off';
+/* échéances retenues pour les notifications (cloche, page, notification du jour) : catégories désactivées exclues */
+const notifItems = days=>reminderItems(days).filter(i=>notifEnabled(i.type));
+const unreadForBell = ()=>notifEnabled('messages') ? unreadNotifications().length : 0;
 function viewNotifications(slot){
   slot.innerHTML = '';
   const msgs = myNotifications(), me = notifReader();
+  if(state._update && state._update.newer) slot.appendChild(el('div',{class:'card settings-card', 'data-fk':'notif-maj'}, el('h3',{}, 'Mise à jour de l’application'),
+    el('div',{class:'settings-row'}, el('div',{class:'desc'}, 'Une nouvelle version est disponible'+(state._update.theirs ? ', publiée le '+state._update.theirs.label : '')+'.'),
+      el('button',{class:'btn btn-primary btn-sm', type:'button', 'data-fk':'notif-mettre-a-jour', onclick:applyUpdate}, 'Mettre à jour'))));
   const card = el('div',{class:'card settings-card', 'data-fk':'notif-messages'}, el('h3',{}, 'Messages'));
   if(!msgs.length) card.appendChild(el('div',{class:'hint'}, 'Aucun message.'));
   msgs.slice(0, 50).forEach(n=>{
@@ -8416,18 +8476,26 @@ function viewNotifications(slot){
         unread ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'notif-lu-'+n.id, onclick:()=>{ markNotificationRead(n); renderContent(); }}, 'Marquer comme lu') : null)));
   });
   slot.appendChild(card);
-  const items = reminderItems();
+  const items = notifItems();
   slot.appendChild(el('div',{class:'card settings-card'}, el('h3',{}, 'Échéances'),
     !items.length ? el('div',{class:'hint'}, 'Rien à signaler.') : el('div',{class:'remind-list'}, ...items.slice(0, 40).map(i=>el('button',{type:'button', class:'remind-row remind-'+i.when, onclick:i.open},
       el('span',{class:'remind-date'}, i.date ? fmtDate(i.date) : 'compteur'), el('span',{class:'remind-main'}, el('span',{class:'remind-label'}, i.label), el('span',{class:'hint', style:'margin:0;'}, [i.vessel ? vesselName(i.vessel) : '', i.sub].filter(Boolean).join(' · ')))))) ));
   const d = notifDelays();
   const types = [...CAL_TYPE_DEFS.filter(t=>['periodique','exercices','jobs','vesselCerts','arrets','levage','ism'].includes(t.key)).map(t=>[t.key, t.label]), ...NOTIF_EXTRA_TYPES];
-  slot.appendChild(el('div',{class:'card settings-card', 'data-fk':'notif-delais'}, el('h3',{}, 'Délai d’apparition des notifications'),
-    el('p',{class:'section-sub'}, 'Combien de jours avant l’échéance chaque type apparaît. Réglage de cet appareil.'),
+  const set = (k, v)=>{ const o = notifDelays(); if(v) o[k] = v==='off' ? 'off' : Number(v); else delete o[k]; saveNotifDelays(o); renderContent(); };
+  const onOff = (k, l, hint)=>{
+    const s = el('select',{class:'select', 'aria-label':l, 'data-fk':'delai-'+k, onchange:e=>set(k, e.target.value)}, el('option',{value:''}, 'Activées'), el('option',{value:'off'}, 'Désactivées'));
+    s.value = d[k]==='off' ? 'off' : '';
+    return el('div',{class:'settings-row'}, el('div',{}, el('div',{class:'lbl'}, l), el('div',{class:'desc'}, hint)), s);
+  };
+  slot.appendChild(el('div',{class:'card settings-card', 'data-fk':'notif-delais'}, el('h3',{}, 'Mes réglages de notifications'),
+    el('p',{class:'section-sub'}, 'Propres à '+(state.me.name ? state.me.name : 'vous')+' sur cet appareil. Une catégorie désactivée ne compte plus dans la cloche ni dans la notification du jour ; elle reste visible dans « Rappels & agenda ».'),
+    onOff('messages', 'Messages', 'service technique contacté, défauts signalés…'),
+    onOff('maj', 'Mises à jour de l’application', 'bandeau et cloche quand une nouvelle version est publiée'),
     ...types.map(([k,l])=>{
-      const s = el('select',{class:'select', 'aria-label':'Délai : '+l, 'data-fk':'delai-'+k, onchange:e=>{ const o = notifDelays(); if(e.target.value) o[k] = Number(e.target.value); else delete o[k]; prefStore.setItem('sw_notif_delays', JSON.stringify(o)); renderContent(); }},
-        el('option',{value:''}, 'Par défaut ('+remindDays()+' j)'), ...[3,7,14,30,60,90,180].map(n=>el('option',{value:String(n)}, n+' jours avant')));
-      s.value = d[k] ? String(d[k]) : '';
+      const s = el('select',{class:'select', 'aria-label':'Délai : '+l, 'data-fk':'delai-'+k, onchange:e=>set(k, e.target.value)},
+        el('option',{value:''}, 'Par défaut ('+remindDays()+' j)'), ...[3,7,14,30,60,90,180].map(n=>el('option',{value:String(n)}, n+' jours avant')), el('option',{value:'off'}, 'Désactivée'));
+      s.value = d[k]==='off' ? 'off' : d[k] ? String(d[k]) : '';
       return el('div',{class:'settings-row'}, el('div',{class:'lbl'}, l), s);
     })));
 }
@@ -11976,9 +12044,9 @@ function maybeNotifyOnOpen(){
   if(TEST_MODE && !maybeNotifyOnOpen.force) return false;
   if(prefStore.getItem('sw_notify')!=='1' || !notificationsSupported() || Notification.permission!=='granted') return false;
   if(prefStore.getItem('sw_notify_last')===todayISO()) return false;
-  const items = reminderItems().filter(i=>i.when!=='bientot');
+  const items = notifItems().filter(i=>i.when!=='bientot');
   prefStore.setItem('sw_notify_last', todayISO());
-  const unread = unreadNotifications().length;
+  const unread = unreadForBell();
   if(!items.length && !unread) return false;
   const title = 'Seaway GMAO — rappels du jour';
   const opts = {body: (unread ? unread+' message(s) non lu(s)\n' : '')+reminderSummary(items)+'\n'+items.slice(0,3).map(i=>(i.vessel ? vesselName(i.vessel)+' : ' : '')+i.label).join('\n'), tag:'seaway-rappels', icon:'icons/icon-192.png'};
@@ -12582,7 +12650,7 @@ function exportSpecPdf(spec){ printSheet(buildExportSheet(spec)); }
    APP_BUILD est inscrit à la publication (tools/preparer-deploiement.ps1) :
    « aaaammjj-hhmm-empreinte ». Fichier ouvert en local : version non numérotée.
    La recherche de mise à jour lit version.json sur le site publié. */
-const APP_BUILD = '20261110-1721-299b2b1f2913';
+const APP_BUILD = '20261110-1734-27d8cc26bd81';
 function appBuildInfo(build){
   const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(?:-(\w+))?/.exec(build||'');
   return m ? {build, date:m[1]+'-'+m[2]+'-'+m[3], time:m[4]+':'+m[5], label:m[3]+'/'+m[2]+'/'+m[1]+' à '+m[4]+'h'+m[5]} : null;
@@ -13088,6 +13156,7 @@ function setupPWA(){
   document.head.appendChild(el('link',{rel:'apple-touch-icon', href:'icons/apple-touch-icon.png'}));
   if('serviceWorker' in navigator){
     navigator.serviceWorker.register('sw.js').catch(e=>console.warn('Service worker non enregistré', e));
+    scheduleUpdateChecks();
     let reloaded = false;
     navigator.serviceWorker.addEventListener('controllerchange', ()=>{
       // nouvelle version installée : recharger seulement si rien n'est en cours
@@ -17475,7 +17544,7 @@ autotest('Éléments', 'format 13 : le Viga n’a qu’un moteur principal et un
 });
 autotest('Paramètres', 'version affichée avec sa date, recherche de mise à jour (version publiée plus récente)', async ()=>{
   expect.ok(appBuildInfo('20261024-1203-ff54f95a493b').label==='24/10/2026 à 12h03', 'date lue dans la version');
-  expect.equal(appBuildInfo('20261110-1721-299b2b1f2913'), null, 'fichier non publié');
+  expect.equal(appBuildInfo('20261110-1734-27d8cc26bd81'), null, 'fichier non publié');
   render(); state.route = '#/parametres'; renderContent();
   const card = $('#content-slot [data-fk=carte-version]');
   expect.ok(card && $('[data-fk=version-app]', card).textContent.length>0, 'carte Version et mises à jour');
@@ -17484,6 +17553,58 @@ autotest('Paramètres', 'version affichée avec sa date, recherche de mise à jo
   expect.ok($('#content-slot [data-fk=version-statut]').textContent.includes('Nouvelle version disponible') && $('#content-slot [data-fk=version-statut]').textContent.includes('31/12/2999'), 'nouvelle version signalée');
   expect.ok($('#content-slot [data-fk=version-statut]').textContent.includes('désinstallez') || !IS_HOSTED, 'conseil de réinstallation si la mise à jour ne prend pas');
   state._update = null;
+  state.route = '#/autotest';
+});
+autotest('Paramètres', 'nouvelle version publiée : bandeau et notification, « Plus tard » le masque', async ()=>{
+  patch(window, 'fetch', async ()=>({ok:true, json:async()=>({version:'29991231-2359-abcdef123456'})}));
+  testRestores.push(()=>{ state._update = null; state._updateLater = false; autoCheckForUpdate.last = 0; });
+  autoCheckForUpdate.last = 0;
+  render(); await autoCheckForUpdate(); await tick(10);
+  const banner = ()=>$$('#file-alert-slot .banner').find(b=>b.textContent.includes('Nouvelle version'));
+  expect.ok(banner() && banner().textContent.includes('31/12/2999'), 'bandeau affiché');
+  expect.ok([...banner().querySelectorAll('button')].some(b=>b.textContent==='Mettre à jour'));
+  state.route = '#/notifications'; renderContent();
+  expect.ok($('#content-slot [data-fk=notif-maj]'), 'visible dans Notifications');
+  [...banner().querySelectorAll('button')].find(b=>b.textContent==='Plus tard').click();
+  expect.ok(!banner(), 'masqué jusqu’à la prochaine ouverture');
+  patch(window, 'fetch', async ()=>({ok:true, json:async()=>({version:APP_BUILD})}));
+  state._updateLater = false; autoCheckForUpdate.last = 0; await autoCheckForUpdate(); renderFileAlerts();
+  expect.ok(!banner(), 'rien si la version est la même');
+  state.route = '#/autotest';
+});
+autotest('Interface', 'cloche du bandeau : nombre à voir, ouvre les notifications', async ()=>{
+  render();
+  const bell = ()=>$('#notif-bell'), count = ()=>$('#notif-bell .top-bell-count');
+  expect.ok(bell() && bell().getAttribute('href')==='#/notifications', 'cloche vers Notifications');
+  expect.ok(count().hidden, 'rien à voir : pas de pastille');
+  addDoc('tasks','tasks',{vessel:'men-du', task:'Graissage', unit:'date', nextDate:addDays(todayISO(), -2)});
+  notifyRole('', 'Message test', '', null, null);
+  state.route = '#/dashboard'; renderContent();
+  expect.equal(count().textContent, '2', 'un message non lu et une échéance en retard');
+  expect.ok(!count().hidden && bell().getAttribute('aria-label').includes('2'));
+  markNotificationRead(state.notifications[0]); renderContent();
+  expect.equal(count().textContent, '1', 'message lu');
+  state.route = '#/autotest';
+});
+autotest('Notifications', 'catégories désactivables, réglages propres à chaque utilisateur', async ()=>{
+  const a = addDoc('users','users',{nom:'Anne', role:'admin'}), b = addDoc('users','users',{nom:'Bob', role:'admin'});
+  testRestores.push(()=>[a, b].forEach(id=>prefStore.removeItem('sw_notif_delays:'+id)));
+  prefStore.setItem('sw_profile_id', a);
+  addDoc('tasks','tasks',{vessel:'men-du', task:'Graissage', unit:'date', nextDate:addDays(todayISO(), -2)});
+  notifyRole('', 'Message test', '', null, null);
+  render(); state.route = '#/notifications'; renderContent();
+  const count = ()=>$('#notif-bell .top-bell-count');
+  expect.equal(count().textContent, '2');
+  const pick = (k, v)=>{ const s = $('#content-slot [data-fk="delai-'+k+'"]'); s.value = v; s.dispatchEvent(new Event('change')); };
+  pick('periodique', 'off');
+  expect.equal(count().textContent, '1', 'entretien désactivé');
+  expect.ok(!$('#content-slot .remind-list'), 'plus d’échéance listée');
+  pick('messages', 'off');
+  expect.ok(count().hidden, 'messages désactivés');
+  expect.ok(reminderItems().some(i=>i.label.includes('Graissage')), 'toujours dans Rappels & agenda');
+  prefStore.setItem('sw_profile_id', b); renderContent();
+  expect.equal(count().textContent, '2', 'Bob garde ses propres réglages');
+  expect.equal($('#content-slot [data-fk=delai-periodique]').value, '');
   state.route = '#/autotest';
 });
 function viewAutotest(slot){
