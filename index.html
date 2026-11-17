@@ -267,6 +267,26 @@ tr.ord-annule>td{color:var(--text-soft);}
 a.user-chip{color:inherit;text-decoration:none;cursor:pointer;border-radius:8px;}
 a.user-chip:hover{background:rgba(255,255,255,.08);}
 a.user-chip:focus-visible{outline:2px solid var(--focus);outline-offset:2px;}
+.conflict-field{padding:8px 0;border-top:1px dashed var(--border);}
+.conflict-field-name{font-weight:600;margin-bottom:4px;}
+.conflict-base{font-size:12.5px;color:var(--text-soft);margin-bottom:6px;}
+.conflict-opts{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+@media (max-width:640px){ .conflict-opts{grid-template-columns:1fr;} }
+.conflict-opt{display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border:1px solid var(--border);border-radius:8px;cursor:pointer;}
+.conflict-opt:has(input:checked){border-color:var(--accent, #1F6FB2);box-shadow:0 0 0 2px rgba(31,111,178,.18);}
+.conflict-opt-body{display:flex;flex-direction:column;gap:2px;min-width:0;}
+.conflict-val{white-space:pre-line;overflow-wrap:anywhere;}
+.conflict-gone{color:#B3261E;font-weight:600;}
+.conflict-kept{background:rgba(46,160,67,.12);}
+body.no-costs .cost-only{display:none !important;}
+.segmented.seg-wrap{flex-wrap:wrap;max-width:100%;}
+.segmented.seg-wrap .seg{white-space:nowrap;}
+@media (max-width:700px){ .segmented.seg-wrap{display:flex;} .segmented.seg-wrap .seg{flex:1 1 auto;padding:7px 10px;} .toolbar .search-box{flex:1 1 100%;} }
+tr.inv-group th{background:var(--surface-2, rgba(0,0,0,.04));text-align:left;font-size:12.5px;text-transform:none;letter-spacing:0;}
+.pick-list{max-height:320px;overflow:auto;border:1px solid var(--border);border-radius:8px;margin-top:6px;}
+.pick-row{display:flex;justify-content:space-between;gap:8px;width:100%;text-align:left;padding:8px 10px;border:0;border-bottom:1px solid var(--border);background:none;font:inherit;cursor:pointer;color:inherit;}
+.pick-row:last-child{border-bottom:0;}
+.pick-row.active{background:rgba(31,111,178,.12);font-weight:600;}
 .th-sort{all:unset;cursor:pointer;font:inherit;color:inherit;text-transform:inherit;letter-spacing:inherit;}
 .th-sort.active,.th-sort:hover{color:var(--text);}
 .th-sort:focus-visible{outline:2px solid var(--focus);outline-offset:2px;}
@@ -852,6 +872,15 @@ body.density-compact .card{padding:12px 14px;}
 .meter-body{display:flex;align-items:center;justify-content:space-between;gap:8px;}
 .gauge{line-height:0;flex-shrink:0;}
 .gauge-track{fill:none;stroke:var(--linen-200);stroke-width:9;stroke-linecap:round;}
+.gauge-zone{fill:none;stroke-width:9;}
+.gauge-zone-ok{stroke:var(--success);}
+.gauge-zone-proche{stroke:var(--warning);}
+.gauge-zone-retard{stroke:var(--danger);}
+.gauge-legend{line-height:1.25;font-size:11.5px;color:var(--text-soft);margin-top:3px;max-width:180px;white-space:normal;}
+.gauge-retard .gauge-legend{color:var(--danger-text, var(--danger));font-weight:600;}
+.my-gauges{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;}
+.my-gauge{position:relative;padding:10px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);}
+.my-gauge .btn-danger-text{position:absolute;top:4px;right:6px;}
 .gauge-fill{fill:none;stroke-width:9;stroke-linecap:round;stroke:var(--unknown);}
 .gauge-ok .gauge-fill{stroke:var(--success);}
 .gauge-proche .gauge-fill{stroke:var(--warning);}
@@ -1270,35 +1299,59 @@ function syncBusy(p){
 /* ---------- jauges des compteurs ----------
    Aiguille = part consommée du cycle du job au compteur le plus proche de son
    échéance (0 : entretien juste fait ; 100 % : entretien dû). */
+/* job affiché par la jauge d'un compteur : choisi par l'administrateur ou le service technique
+   (réglage partagé gaugeTasks), sinon la vidange, sinon le job au compteur le plus proche de son échéance */
+function gaugeTaskChoice(vessel, meter){ return ((setting('gaugeTasks')||{}).items||{})[vessel+':'+meter] || ''; }
+function taskGaugeInfo(t){
+  if(t.unit==='heures'){
+    const cur = vesselMeter(t.vessel, t.meter||'mp1');
+    if(cur==null || !(Number(t.cycleHours)>0) || t.hoursAtLast==null || t.hoursAtLast==='') return null;
+    const remaining = Number(t.hoursAtLast)+Number(t.cycleHours)-cur;
+    return {frac:1 - remaining/Number(t.cycleHours), remaining, unit:'h', task:t, status:taskStatus(t)};
+  }
+  if(!t.nextDate) return null;
+  const total = Number(t.cycleDays)>0 ? Number(t.cycleDays) : t.lastDate ? diffDays(t.lastDate, t.nextDate) : 0;
+  if(!(total>0)) return null;
+  const remaining = diffDays(todayISO(), t.nextDate);
+  return {frac:1 - remaining/total, remaining, unit:'j', task:t, status:taskStatus(t)};
+}
 function meterGaugeInfo(vessel, meter){
   const cur = vesselMeter(vessel, meter);
   const tasks = state.tasks.filter(t=>t.vessel===vessel && t.unit==='heures' && (t.meter||'mp1')===meter && Number(t.cycleHours)>0
     && t.hoursAtLast!=null && t.hoursAtLast!=='');
   if(cur==null || !tasks.length) return {frac:null, status:'inconnu', task:null, remaining:null};
+  const chosen = tasks.find(t=>t.id===gaugeTaskChoice(vessel, meter)) || tasks.find(t=>/vidange/i.test(normText(t.task)));
+  if(chosen) return taskGaugeInfo(chosen);
   let best = null;
-  tasks.forEach(t=>{
-    const remaining = Number(t.hoursAtLast)+Number(t.cycleHours)-cur;
-    const frac = 1 - remaining/Number(t.cycleHours);
-    if(!best || frac > best.frac) best = {frac, task:t, remaining};
-  });
-  return {frac:best.frac, remaining:best.remaining, task:best.task, status:taskStatus(best.task)};
+  tasks.forEach(t=>{ const g = taskGaugeInfo(t); if(g && (!best || g.frac > best.frac)) best = g; });
+  return best || {frac:null, status:'inconnu', task:null, remaining:null};
+}
+/* zone de la jauge : vert jusqu'à 50 %, orange de 50 à 75 %, rouge de 75 à 100 % */
+const gaugeZone = f=>f==null ? 'inconnu' : f>=0.75 ? 'retard' : f>=0.5 ? 'proche' : 'ok';
+function gaugeLabel(g){
+  if(!g || g.frac==null) return 'Aucun job suivi à ce compteur';
+  const n = g.unit==='j' ? Math.abs(g.remaining)+' j' : fmtHours(Math.abs(g.remaining));
+  return g.task.task+' : '+(g.remaining<0 ? 'dépassé de '+n : 'dans '+n);
+}
+function gaugeSVG(g, w){
+  const cx = 60, cy = 58, r = 46;
+  const f = g && g.frac!=null ? Math.max(0, Math.min(1, g.frac)) : null;
+  const px = (a, rr)=>(cx + rr*Math.cos(a)).toFixed(1)+' '+(cy - rr*Math.sin(a)).toFixed(1);
+  const arc = (t0, t1, cls)=>'<path class="'+cls+'" d="M'+px(Math.PI*(1-t0), r)+' A'+r+' '+r+' 0 0 1 '+px(Math.max(0.0001, Math.PI*(1-t1)), r)+'"/>';
+  return '<svg viewBox="0 0 120 66" width="'+w+'" height="'+Math.round(w*0.55)+'" aria-hidden="true" focusable="false">'
+    + arc(0, 0.5, 'gauge-zone gauge-zone-ok') + arc(0.5, 0.75, 'gauge-zone gauge-zone-proche') + arc(0.75, 1, 'gauge-zone gauge-zone-retard')
+    + [0, .25, .5, .75, 1].map(t=>{ const a = Math.PI*(1-t); return '<line class="gauge-tick" x1="'+px(a, r-9).replace(' ','" y1="')+'" x2="'+px(a, r-4).replace(' ','" y2="')+'"/>'; }).join('')
+    + '<g class="gauge-needle" style="transform:rotate('+(f==null ? -90 : f*180-90).toFixed(1)+'deg)"><line x1="60" y1="58" x2="60" y2="22"/><circle cx="60" cy="58" r="4.5"/></g>'
+    + '</svg>';
+}
+/* jauge avec sa légende toujours affichée (job suivi et temps restant) */
+function taskGauge(g, size, title){
+  const label = gaugeLabel(g);
+  return el('div',{class:'gauge gauge-'+gaugeZone(g && g.frac), role:'img', 'aria-label':(title ? title+' : ' : '')+label, title:label, html:
+    gaugeSVG(g, size||120)+'<div class="gauge-legend">'+esc(label)+'</div>'});
 }
 function meterGauge(vessel, meter, size){
-  const g = meterGaugeInfo(vessel, meter);
-  const w = size||120, cx = 60, cy = 58, r = 46;
-  const f = g.frac==null ? 0 : Math.max(0, Math.min(1.1, g.frac));
-  const ang = Math.PI*(1 - Math.min(1, f)); // 180° (gauche) → 0° (droite)
-  const px = (a, rr)=>(cx + rr*Math.cos(a)).toFixed(1)+' '+(cy - rr*Math.sin(a)).toFixed(1);
-  const arc = (a0, a1, cls)=>'<path class="'+cls+'" d="M'+px(a0, r)+' A'+r+' '+r+' 0 0 1 '+px(a1, r)+'"/>';
-  const label = g.frac==null ? 'Aucun job suivi à ce compteur'
-    : (g.remaining<0 ? 'Entretien dépassé de '+fmtHours(-g.remaining) : 'Prochain entretien dans '+fmtHours(g.remaining))+' — '+g.task.task;
-  return el('div',{class:'gauge gauge-'+g.status, role:'img', 'aria-label':meterLabel(meter, vessel)+' : '+label, title:label, html:
-    '<svg viewBox="0 0 120 66" width="'+w+'" height="'+Math.round(w*0.55)+'" aria-hidden="true" focusable="false">'
-    + arc(Math.PI, 0.0001, 'gauge-track')
-    + (g.frac==null ? '' : arc(Math.PI, Math.max(0.0001, ang), 'gauge-fill'))
-    + [0, .25, .5, .75, 1].map(t=>{ const a = Math.PI*(1-t); return '<line class="gauge-tick" x1="'+px(a, r-9).replace(' ','" y1="')+'" x2="'+px(a, r-4).replace(' ','" y2="')+'"/>'; }).join('')
-    + '<g class="gauge-needle" style="transform:rotate('+(g.frac==null ? -90 : (Math.min(1, f)*180-90)).toFixed(1)+'deg)"><line x1="60" y1="58" x2="60" y2="22"/><circle cx="60" cy="58" r="4.5"/></g>'
-    + '</svg>'});
+  return taskGauge(meterGaugeInfo(vessel, meter), size, meterLabel(meter, vessel));
 }
 
 /* ---------- cartes navires en relief : inclinaison et reflet suivant le pointeur ---------- */
@@ -1484,6 +1537,16 @@ function canConfigure(){ return uiWritable() && ['admin','technique'].includes(c
 function canManageProfiles(){ return uiWritable() && currentRole()==='admin'; }
 /* modifier un job déjà fait (depuis l'historique) : capitaine et administrateur seulement */
 function canEditDoneJob(){ return uiWritable() && ['admin','capitaine'].includes(currentRole()); }
+/* tarifs et coûts : capitaine, service technique, administrateur (masqués pour l'équipage, contrôle d'interface) */
+function canSeeCosts(){ return ['admin','technique','capitaine'].includes(currentRole()); }
+/* fiches des marins et éléments du navire : administrateur et personnel de l'armement (service technique ou profil « armement ») */
+function canManageFleetData(){ const p = currentProfile(); return uiWritable() && (['admin','technique'].includes(currentRole()) || (!!p && p.type==='armement' && canEdit())); }
+/* échéances des jobs et pièces liées par défaut : administrateur et service technique */
+const canSetSchedule = ()=>canConfigure();
+/* rend des champs d'une fenêtre non modifiables, avec une mention */
+function lockFields(body, names, why){
+  names.forEach(n=>{ const i = $('[name="'+n+'"]', body); if(!i) return; if(i.tagName==='SELECT') i.disabled = true; else i.readOnly = true; i.title = why; });
+}
 
 /* ---------- préférences d'interface (thème / densité) ---------- */
 function applyPrefs(){
@@ -2146,6 +2209,8 @@ function mergeObjects(b, l, r, ctx, where){
   const out = {};
   const keys = [...new Set([...Object.keys(l), ...Object.keys(r), ...Object.keys(b)])];
   keys.forEach(k=>{
+    // « lu par » : chacun ajoute son nom, on réunit les deux listes
+    if(k==='readBy' && (Array.isArray(l[k]) || Array.isArray(r[k]))){ out[k] = [...new Set([...(l[k]||[]), ...(r[k]||[])])]; return; }
     const v = merge3(b[k], l[k], r[k], ctx, {...where, field: where.field ? where.field+' › '+k : k});
     if(v && v.__conflict){ v.__conflict.target = {obj:out, key:k}; out[k] = clone(v.__conflict.local); }
     else if(v!==undefined) out[k] = v;
@@ -2191,6 +2256,23 @@ function mergeStockQuantities(b, l, r){
   const total = Math.round((q(b)+sum(dl)+sum(dr))*1000)/1000;
   return [{...l, quantite:total}, {...r, quantite:total}];
 }
+/* job récurrent fait sur deux appareils : les réalisations sont réunies ; la dernière réalisation, la prochaine
+   échéance et le compteur sont ceux de la réalisation la plus récente (pas de question) */
+function alignTaskDone(b, l, r){
+  const f = x=>({lastDate:x.lastDate, nextDate:x.nextDate, hoursAtLast:x.hoursAtLast});
+  const moved = x=>!sameValue(f(b), f(x));
+  if(!moved(l) || !moved(r) || sameValue(f(l), f(r))) return [l, r];
+  const w = f((l.lastDate||'') >= (r.lastDate||'') ? l : r);
+  return [{...l, ...w}, {...r, ...w}];
+}
+/* job ponctuel : si un appareil l'a déclaré fait, il est fait */
+function alignJobDone(b, l, r){
+  if(sameValue(l.statut, r.statut) || sameValue(b.statut, l.statut) || sameValue(b.statut, r.statut)) return [l, r];
+  const w = l.statut==='Terminé' ? l : r.statut==='Terminé' ? r : null;
+  if(!w) return [l, r];
+  const pick = {statut:'Terminé', dateRealisation:w.dateRealisation, ...(l.piecesSorties || r.piecesSorties ? {piecesSorties:true} : {})};
+  return [{...l, ...pick}, {...r, ...pick}];
+}
 function mergeCollection(key, b, l, r, ctx){
   b = b||[]; l = l||[]; r = r||[];
   if(MERGE_APPEND_ONLY.has(key)){
@@ -2205,9 +2287,12 @@ function mergeCollection(key, b, l, r, ctx){
   const out = [];
   ids.forEach(id=>{
     let bv = bm.get(id), lv = lm.get(id), rv = rm.get(id);
-    const where = {collection:key, id, label: recordLabel(key, lv || rv || bv), field:''};
+    const where = {collection:key, id, label: recordLabel(key, lv || rv || bv), field:'',
+      localBy:lv && lv.updatedBy, localAt:lv && lv.updatedAt, remoteBy:rv && rv.updatedBy, remoteAt:rv && rv.updatedAt, vessel:(lv || rv || bv || {}).vessel};
     if(lv && rv){
       if(key==='inventory' && bv) [lv, rv] = mergeStockQuantities(bv, lv, rv);
+      if(key==='tasks' && bv) [lv, rv] = alignTaskDone(bv, lv, rv);
+      if(key==='jobs' && bv) [lv, rv] = alignJobDone(bv, lv, rv);
       if(key==='meters' && !sameValue(lv, rv) && !sameValue(bv, lv) && !sameValue(bv, rv)){
         // valeur courante d'un compteur : la plus récente l'emporte (l'historique garde tout)
         out.push(clone((lv.updatedAt||'') >= (rv.updatedAt||'') ? lv : rv));
@@ -2279,6 +2364,17 @@ const FIELD_LABELS = {task:'Intitulé', titre:'Titre', observations:'Observation
 function fieldLabel(path){
   return String(path||'').split(' › ').map(k=>FIELD_LABELS[k]||k).filter(k=>!/^(updatedAt|updatedBy)$/.test(k)).join(' › ') || 'fiche entière';
 }
+/* valeur détaillée pour choisir : listes et fiches dépliées, dates lisibles */
+function conflictDetail(v){
+  if(v===undefined || v===null || v==='' || (Array.isArray(v) && !v.length)) return '(vide)';
+  if(Array.isArray(v)) return v.every(x=>!isPlainObject(x)) ? v.join(', ') : v.slice(0, 8).map(x=>'• '+conflictValueText(x)).join('\n')+(v.length>8 ? '\n… et '+(v.length-8)+' autre(s)' : '');
+  if(isPlainObject(v)) return Object.entries(v).filter(([k, x])=>!/^(id|updatedAt|updatedBy|createdAt|dataUrl|path|size)$/.test(k) && x!=null && x!=='' && !(Array.isArray(x) && !x.length))
+    .slice(0, 12).map(([k, x])=>(FIELD_LABELS[k]||k)+' : '+conflictValueText(x)).join('\n') || 'fiche';
+  if(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(String(v))) return fmtDateTime(v);
+  if(/^\d{4}-\d{2}-\d{2}$/.test(String(v))) return fmtDate(v);
+  const s = String(v); return s.length>600 ? s.slice(0,600)+'…' : s;
+}
+const conflictWho = (by, at)=>[by ? 'par '+by : '', at ? 'le '+fmtDateTime(at) : ''].filter(Boolean).join(' ');
 function conflictValueText(v){
   if(v===undefined || v===null || v==='') return '(vide)';
   if(Array.isArray(v)) return v.length+' élément'+(v.length>1?'s':'');
@@ -2305,22 +2401,31 @@ function openConflictResolver(conflicts, otherLabel){
     const choices = autoResolveTechnical(conflicts, new Array(conflicts.length).fill(null));
     const pending = conflicts.map((c,i)=>i).filter(i=>choices[i]==null);
     if(!pending.length){ resolve(choices); return; }
-    const rows = pending.map(i=>{
-      const c = conflicts[i];
-      const name = 'conflit-'+i+'-'+uid();
-      const opt = (val, title, text)=>el('label',{class:'conflict-opt'},
-        el('input',{type:'radio', name, value:val, onchange:()=>{ choices[i] = val; }}),
-        el('span',{}, el('strong',{}, title), el('span',{class:'conflict-val'}, text)));
-      const what = c.kind==='delete'
-        ? (c.local ? 'modifiée ici, supprimée '+otherLabel : 'supprimée ici, modifiée '+otherLabel)
-        : 'champ « '+fieldLabel(c.field)+' »';
-      return el('div',{class:'conflict-row'},
-        el('div',{class:'conflict-what'}, el('strong',{}, c.label), ' — '+what),
-        c.kind==='delete'
-          ? el('div',{class:'conflict-opts'}, opt('local', 'Garder ma version', c.local ? 'conserver la fiche modifiée' : 'la supprimer'),
-              opt('remote', 'Version '+otherLabel, c.remote ? 'conserver la fiche modifiée' : 'la supprimer'))
-          : el('div',{class:'conflict-opts'}, opt('local', 'Ma version', conflictValueText(c.local)), opt('remote', 'Version '+otherLabel, conflictValueText(c.remote))));
+    const counter = el('div',{class:'hint', 'data-fk':'conflits-compte', style:'margin:0 0 8px;'});
+    const count = ()=>{ const n = pending.filter(i=>choices[i]!=null).length; counter.textContent = n+' / '+pending.length+' choix faits'; };
+    // regroupés par fiche ; pour chaque champ : la valeur avant, puis les deux versions côte à côte, avec qui et quand
+    const groups = new Map();
+    pending.forEach(i=>{ const c = conflicts[i], k = c.collection+':'+c.id; if(!groups.has(k)) groups.set(k, []); groups.get(k).push(i); });
+    const rows = [...groups.values()].map(list=>{
+      const c0 = conflicts[list[0]];
+      return el('div',{class:'conflict-row', 'data-fk':'conflit-fiche'},
+        el('div',{class:'conflict-what'}, el('strong',{}, c0.label), c0.vessel ? ' · '+vesselName(c0.vessel) : ''),
+        ...list.map(i=>{
+          const c = conflicts[i], name = 'conflit-'+i+'-'+uid();
+          const opt = (val, title, value, who, gone)=>el('label',{class:'conflict-opt'},
+            el('input',{type:'radio', name, value:val, 'data-fk':'choix-'+val, onchange:()=>{ choices[i] = val; count(); }}),
+            el('span',{class:'conflict-opt-body'}, el('strong',{}, title), who ? el('span',{class:'hint', style:'margin:0;'}, who) : null,
+              el('span',{class:'conflict-val'+(gone ? ' conflict-gone' : '')}, value)));
+          const isDel = c.kind==='delete';
+          return el('div',{class:'conflict-field'},
+            el('div',{class:'conflict-field-name'}, isDel ? (c.local ? 'Modifiée ici, supprimée '+otherLabel : 'Supprimée ici, modifiée '+otherLabel) : fieldLabel(c.field)),
+            !isDel ? el('div',{class:'conflict-base'}, 'Avant : ', el('span',{class:'conflict-val'}, conflictDetail(c.base))) : null,
+            el('div',{class:'conflict-opts'},
+              opt('local', 'Sur cet appareil', isDel && !c.local ? 'Supprimer la fiche' : conflictDetail(c.local), conflictWho(c.localBy, c.localAt), isDel && !c.local),
+              opt('remote', 'Version '+otherLabel, isDel && !c.remote ? 'Supprimer la fiche' : conflictDetail(c.remote), conflictWho(c.remoteBy, c.remoteAt), isDel && !c.remote)));
+        }));
     });
+    count();
     let settled = false;
     const done = v=>{ if(!settled){ settled = true; resolve(v); } };
     openModal({
@@ -2328,9 +2433,9 @@ function openConflictResolver(conflicts, otherLabel){
       body: el('div',{},
         el('p',{class:'section-sub', style:'margin-top:0;'}, 'Ces fiches ont été modifiées à la fois ici et '+otherLabel+', différemment. Toutes les autres modifications, des deux côtés, ont été fusionnées. Choisissez la version à garder pour chaque ligne.'),
         el('div',{style:'display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;'},
-          el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:(e)=>{ pending.forEach(i=>choices[i]='local'); e.target.closest('.modal').querySelectorAll('input[value=local]').forEach(x=>x.checked=true); }}, 'Tout : ma version'),
+          el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:(e)=>{ pending.forEach(i=>choices[i]='local'); e.target.closest('.modal').querySelectorAll('input[value=local]').forEach(x=>x.checked=true); count(); }}, 'Tout : ma version'),
           el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:(e)=>{ pending.forEach(i=>choices[i]='remote'); e.target.closest('.modal').querySelectorAll('input[value=remote]').forEach(x=>x.checked=true); }}, 'Tout : version '+otherLabel)),
-        ...rows),
+        counter, ...rows),
       submitLabel:'Appliquer et synchroniser',
       validate: ()=>pending.some(i=>choices[i]==null) ? 'Choisissez une version pour chaque conflit (ou « Annuler » : rien ne sera synchronisé).' : null,
       onSubmit: async ()=>{ done(choices); },
@@ -2446,9 +2551,36 @@ async function mergeWithRemote(remote, auto, otherLabel){
     choices = await openConflictResolver(conflicts, otherLabel);
     if(!choices){ toast('Synchronisation annulée : rien n’a été écrit.'); return null; }
   }
+  const manual = conflicts.map((c, i)=>i).filter(i=>autoResolveTechnical([conflicts[i]], [null])[0]==null);
   applyConflictChoices(merged, conflicts, choices);
+  // l'administrateur est prévenu et peut revoir chaque conflit tranché
+  if(manual.length){
+    const now = new Date().toISOString();
+    merged.notifications = merged.notifications || [];
+    merged.notifications.push({id:uid(), toRole:'admin', title:manual.length+' conflit'+(manual.length>1 ? 's' : '')+' de synchronisation tranché'+(manual.length>1 ? 's' : ''),
+      text:'Par '+(state.me.name||'un utilisateur')+', version comparée : '+otherLabel, ref:{kind:'conflicts'}, at:now, by:state.me.name||null, readBy:[],
+      conflicts:manual.slice(0, 100).map(i=>{ const c = conflicts[i]; return {label:c.label, vessel:c.vessel||null, field:c.kind==='delete' ? 'Fiche supprimée d’un côté' : fieldLabel(c.field),
+        base:conflictDetail(c.base).slice(0, 400), local:conflictDetail(c.local).slice(0, 400), remote:conflictDetail(c.remote).slice(0, 400),
+        localWho:conflictWho(c.localBy, c.localAt), remoteWho:conflictWho(c.remoteBy, c.remoteAt), choice:choices[i]}; }),
+      otherLabel, createdAt:now, updatedAt:now, updatedBy:state.me.name||null});
+  }
   state.fileConflict = null;
   return {merged, conflicts:open};
+}
+/* administrateur : relire les conflits tranchés (Notifications) */
+function openConflictLogModal(n){
+  const list = n.conflicts || [];
+  openModal({title:n.title, infoOnly:true, wide:true, body:el('div',{},
+    el('p',{class:'section-sub', style:'margin-top:0;'}, (n.at ? fmtDateTime(n.at)+' · ' : '')+(n.text||'')),
+    el('div',{class:'table-wrap'}, el('table',{class:'compact-table', 'data-fk':'journal-conflits'},
+      el('thead',{}, el('tr',{}, ...['Fiche','Champ','Avant','Sur l’appareil','Autre version','Gardé'].map(h=>el('th',{}, h)))),
+      el('tbody',{}, ...list.map(c=>el('tr',{},
+        el('td',{style:'font-weight:600;'}, c.label, c.vessel ? el('div',{class:'hint', style:'margin:0;'}, vesselName(c.vessel)) : null),
+        el('td',{}, c.field),
+        el('td',{class:'conflict-val'}, c.base),
+        el('td',{class:'conflict-val'+(c.choice==='local' ? ' conflict-kept' : '')}, c.local, c.localWho ? el('div',{class:'hint', style:'margin:0;'}, c.localWho) : null),
+        el('td',{class:'conflict-val'+(c.choice==='remote' ? ' conflict-kept' : '')}, c.remote, c.remoteWho ? el('div',{class:'hint', style:'margin:0;'}, c.remoteWho) : null),
+        el('td',{}, c.choice==='remote' ? 'Autre version' : 'Version de l’appareil'))))))) });
 }
 
 /* --- emplacement des données --- */
@@ -2603,7 +2735,7 @@ function isOnline(){ return navigator.onLine !== false; }
 const RELAY_API = {fetch: (url, opts)=>fetch(url, opts)}; // remplaçable par les autotests
 /* version du relais attendue par cette application (RELAY_VERSION dans relais/Code.gs) ;
    un relais plus ancien fonctionne, mais sans les dernières fonctions (ex. revoir les liens) */
-const RELAY_EXPECTED = 12;
+const RELAY_EXPECTED = 13;
 
 function relayVersion(){ return isRelay() ? Number(state.driveFile.relay.version)||1 : null; }
 function relayOutdated(){ return isRelay() && relayVersion() < RELAY_EXPECTED; }
@@ -2944,6 +3076,29 @@ function openInviteHelpModal(u){
       el('button',{class:'btn btn-primary btn-sm', type:'button', 'data-fk':'aide-rejoindre', onclick:()=>{ closeAllModalsQuiet(); openJoinModal(); }}, 'Coller le lien administrateur…'),
       el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>{ closeAllModalsQuiet(); openAppLinkModal(); }}, 'Lien de l’application seule')))});
 }
+/* présence (relais version 13) : en ligne = activité dans les 5 dernières minutes */
+const ONLINE_MS = 5*60*1000;
+const isOnlineNow = t=>!!t.seen && Date.now()-new Date(t.seen).getTime() < ONLINE_MS;
+function presenceText(t){
+  if(!t.seen) return 'jamais connecté (ou relais antérieur à la version 13)';
+  return (isOnlineNow(t) ? 'en ligne' : 'vu '+fmtAgo(t.seen))+(t.lastWrite ? ' · dernière modification '+fmtAgo(t.lastWrite) : ' · aucune modification envoyée');
+}
+function presenceCard(){
+  const c = state._relayLinks, list = (c && c.tokens) || null;
+  const card = el('div',{class:'card settings-card', 'data-fk':'connexions'}, el('div',{class:'section-head', style:'margin-bottom:6px;'}, el('h3',{style:'margin:0;'}, 'Connexions récentes'),
+    el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'connexions-actualiser', onclick:()=>loadRelayLinks(true).then(()=>renderContent())}, 'Actualiser')));
+  if(!list){ card.appendChild(el('div',{class:'hint'}, c && c.error ? c.error : 'Chargement…')); return card; }
+  const rows = list.slice().sort((a,b)=>(b.seen||'').localeCompare(a.seen||''));
+  const online = rows.filter(isOnlineNow).length;
+  card.appendChild(el('div',{class:'section-sub', style:'margin-bottom:6px;'}, online+' personne(s) en ligne. Une synchronisation compte comme une connexion ; « dernière modification » = dernières données envoyées.'));
+  rows.forEach(t=>{
+    const p = t.profileId && state.users.find(u=>u.id===t.profileId);
+    card.appendChild(el('div',{class:'settings-row', 'data-fk':'connexion-'+t.ref},
+      el('div',{}, el('div',{class:'lbl'}, (p ? profileFullName(p) : t.name || 'Sans nom')+(t.self ? ' (vous)' : '')), el('div',{class:'desc'}, presenceText(t))),
+      el('span',{class:'badge '+(isOnlineNow(t) ? 'ok' : 'inconnu')}, isOnlineNow(t) ? 'En ligne' : t.seen ? 'Hors ligne' : '—')));
+  });
+  return card;
+}
 async function openActiveLinksModal(){
   let list;
   try{ list = (await relayCall('list')).tokens; }catch(e){ toast(e.message); return; }
@@ -2958,7 +3113,7 @@ async function openActiveLinksModal(){
         el('div',{}, el('div',{class:'lbl'}, (p ? profileFullName(p) : t.name || 'Sans nom')+(t.self ? ' (vous)' : '')),
           el('div',{class:'desc'}, [t.admin ? 'Lien administrateur' : roleDef(role).label, t.readOnly ? 'lecture seule' : '',
             p ? '' : (t.profileId ? 'profil supprimé' : 'aucun profil relié'), p && p.role!==role ? 'profil indiqué « '+roleDef(p.role).label+' »' : '',
-            t.created ? 'créé le '+fmtDateTime(t.created) : '', 'réf. '+t.ref].filter(Boolean).join(' · '))),
+            t.created ? 'créé le '+fmtDateTime(t.created) : '', 'réf. '+t.ref, presenceText(t)].filter(Boolean).join(' · '))),
         el('div',{style:'display:flex;gap:8px;align-items:center;flex-wrap:wrap;'},
           t.link ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'voir-lien-'+t.ref, onclick:()=>{
             const pu = t.profileId && state.users.find(x=>x.id===t.profileId);
@@ -3698,8 +3853,8 @@ const METERS = [
    les noms changent et ce qui n'existe pas à bord est masqué (null) */
 const VESSEL_LAYOUTS = {
   viga: {
-    meters: {mp1:{label:'MP', long:'Moteur principal'}, mp2:null},
-    tanks: {'go-bd':{l:'Caisse MDO'}, 'go-td':null, 'hu-bd':{l:'Huile propulsion'}, 'hu-td':null, 'hu-aux':{l:'Huile auxiliaire'}},
+    meters: {mp1:{label:'MP', long:'Moteur principal'}, mp2:null, dg:null},
+    tanks: {'go-bd':{l:'Caisse MDO'}, 'go-td':null, 'hu-bd':{l:'Huile propulsion'}, 'hu-td':null, 'hu-aux':{l:'Huile auxiliaire', meter:''}},
   },
 };
 const layoutOf = v=>VESSEL_LAYOUTS[v] || {};
@@ -3818,6 +3973,40 @@ function taskDueText(t){
   return fmtDate(t.nextDate);
 }
 
+/* administrateur, service technique : job suivi par la jauge d'un compteur (pour toute la flotte) */
+function openGaugeTaskModal(vessel, meter){
+  const tasks = state.tasks.filter(t=>t.vessel===vessel && t.unit==='heures' && (t.meter||'mp1')===meter);
+  openModal({title:'Jauge du compteur '+meterLabel(meter, vessel)+' — '+vesselName(vessel), readOnly:!canConfigure(), submitLabel:'Enregistrer',
+    body:el('div',{}, field('Job affiché par la jauge','task','select', [{v:'', l:'Automatique (vidange, sinon le job le plus proche de son échéance)'}, ...tasks.map(t=>({v:t.id, l:t.task+(t.cycleHours ? ' — toutes les '+fmtHours(t.cycleHours) : '')}))], gaugeTaskChoice(vessel, meter))),
+    onSubmit: async d=>{
+      const items = {...((setting('gaugeTasks')||{}).items||{})};
+      if(d.task) items[vessel+':'+meter] = d.task; else delete items[vessel+':'+meter];
+      saveSetting('gaugeTasks', {items});
+      logHistory('settings', 'gaugeTasks', 'Jauge '+meterLabel(meter, vessel)+' '+vesselName(vessel), 'modifié', vessel, d.task ? (state.tasks.find(t=>t.id===d.task)||{}).task : 'automatique');
+      toast('Jauge réglée');
+    }});
+}
+/* « Mes compteurs » : jauges personnelles (jobs choisis par chacun), propres à l'utilisateur sur cet appareil */
+const myGaugesKey = ()=>'sw_my_gauges:'+notifReader();
+function myGauges(){ try{ const l = JSON.parse(prefStore.getItem(myGaugesKey())||'[]'); return Array.isArray(l) ? l : []; }catch(e){ return []; } }
+function saveMyGauges(l){ prefStore.setItem(myGaugesKey(), JSON.stringify(l)); }
+function openAddMyGaugeModal(vessel){
+  const mine = myGauges();
+  const tasks = state.tasks.filter(t=>t.vessel===vessel && !mine.includes(t.id) && taskGaugeInfo(t)).sort((a,b)=>a.task.localeCompare(b.task,'fr'));
+  if(!tasks.length){ toast('Aucun autre job récurrent à suivre sur ce navire.'); return; }
+  openModal({title:'Ajouter un compteur personnel', submitLabel:'Ajouter',
+    body:el('div',{}, el('div',{class:'hint', style:'margin:0 0 8px;'}, 'La jauge s’affiche dans votre « Saisie à bord », sur cet appareil.'),
+      field('Job à suivre','task','select', tasks.map(t=>({v:t.id, l:t.task+' — '+(t.unit==='heures' ? 'compteur '+meterLabel(t.meter, t.vessel) : 'échéance '+fmtDate(t.nextDate))})), tasks[0].id)),
+    onSubmit: async d=>{ saveMyGauges([...myGauges(), d.task]); }});
+}
+function myGaugesSection(vessel){
+  const list = myGauges().map(id=>state.tasks.find(t=>t.id===id)).filter(t=>t && t.vessel===vessel);
+  return el('div',{'data-fk':'mes-compteurs'},
+    list.length ? el('div',{class:'my-gauges'}, ...list.map(t=>el('div',{class:'my-gauge', 'data-fk':'ma-jauge-'+t.id},
+      el('button',{class:'btn-danger-text', type:'button', 'aria-label':'Retirer la jauge '+t.task, onclick:()=>{ saveMyGauges(myGauges().filter(x=>x!==t.id)); renderContent(); }}, '×'),
+      taskGauge(taskGaugeInfo(t), 120, t.task)))) : el('div',{class:'hint', style:'margin:0 0 6px;'}, 'Ajoutez les jobs que vous voulez voir d’un coup d’œil.'),
+    el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'ajouter-ma-jauge', style:'margin-top:6px;', onclick:()=>openAddMyGaugeModal(vessel)}, el('span',{html:iconPlus()}), 'Ajouter un compteur'));
+}
 function metersPanel(vessel){
   const wrap = el('div',{class:'meters-panel', role:'group', 'aria-label':'Compteurs horaires'});
   vesselMeters(vessel).forEach(m=>{
@@ -3832,6 +4021,7 @@ function metersPanel(vessel){
       el('div',{class:'meter-actions'},
         canInput() ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'aria-label':'Relever le compteur '+m.label, 'data-fk':'releve-'+m.key, onclick:()=>openMeterModal(vessel, m.key)}, 'Relever') : null,
         el('button',{class:'btn btn-ghost btn-sm', type:'button', 'aria-label':'Historique du compteur '+m.label, onclick:()=>openMeterHistory(vessel, m.key)}, 'Historique'),
+        canConfigure() ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'jauge-job-'+m.key, onclick:()=>openGaugeTaskModal(vessel, m.key)}, 'Job affiché…') : null,
         canEdit() ? el('button',{class:'btn-danger-text meter-reset', type:'button', 'aria-label':'Remettre à zéro le compteur '+m.label, onclick:()=>openMeterResetModal(vessel, m.key)}, 'Remise à zéro') : null
       )
     ));
@@ -4053,6 +4243,7 @@ const NAV = [
   {route:'#/certificats-navire', label:'Certificats navire', icon:iconAnchor},
   {route:'#/equipage', label:'Équipage', icon:iconUser},
   {route:'#/profils', label:'Profils & accès', icon:()=>iconKey()},
+  {route:'#/mon-planning', label:'Mon planning', icon:()=>iconPlanning()},
   {route:'#/planning', label:'Planning d’équipage', icon:()=>iconPlanning()},
   {route:'#/heures', label:'Heures de travail', icon:()=>iconTimer()},
   {route:'#/rapports', label:'Rapports', icon:()=>iconPrinter()},
@@ -4071,12 +4262,12 @@ const NAV_GROUPS = [
   {id:'maintenance', label:'Maintenance', icon:iconWrench, routes:['#/entretien','#/maintenance-historique','#/defauts','#/arrets','#/equipements','#/certificats-navire']},
   {id:'stocks', label:'Stocks & commandes', icon:iconBox, routes:['#/inventaire','#/commandes']},
   {id:'carburant', label:'Carburant & huiles', icon:iconDroplet, routes:['#/carburant','#/consommations']},
-  {id:'equipage', label:'Équipage', icon:iconUser, routes:['#/equipage','#/certificats-equipage','#/planning','#/heures']},
+  {id:'equipage', label:'Équipage', icon:iconUser, routes:['#/mon-planning','#/planning','#/heures','#/certificats-equipage','#/equipage']},
   {id:'documents', label:'Documents & rapports', icon:iconBook, routes:['#/documentation','#/tableurs','#/rapports']},
   {id:'historique', label:'Historique', icon:iconClock, routes:['#/historique']},
   {id:'parametres', label:'Paramètres', icon:iconSettings, routes:['#/parametres','#/profils']},
 ];
-const NAV_SUB_LABELS = {'#/maintenance-historique':'Historique', '#/certificats-equipage':'Certificats', '#/carburant':'Relevés et soutages', '#/dashboard':'Vue d’ensemble', '#/parametres':'Réglages', '#/rappels':'Rappels', '#/equipage':'Marins'};
+const NAV_SUB_LABELS = {'#/maintenance-historique':'Historique', '#/certificats-equipage':'Certificats', '#/carburant':'Relevés et soutages', '#/dashboard':'Vue d’ensemble', '#/parametres':'Réglages', '#/rappels':'Rappels', '#/equipage':'Marins', '#/planning':'Planning équipage', '#/heures':'Heures de travail'};
 function routeKey(route){ const r = String(route||''); if(r.startsWith('#/certificats-marins')) return '#/equipage'; const n = NAV.find(x=>r.startsWith(x.route)); return n ? n.route : '#/dashboard'; }
 function navGroupOf(route){ const k = routeKey(route); return NAV_GROUPS.find(g=>g.routes.includes(k)) || NAV_GROUPS[1]; }
 function visibleGroupRoutes(g){ const vis = new Set(visibleNav().map(n=>n.route)); return g.routes.filter(r=>vis.has(r)); }
@@ -4096,7 +4287,14 @@ function subNav(route){
 /* modules masqués dans le menu (Paramètres › Affichage, réglage de l'appareil) ;
    Paramètres reste toujours visible. Le comparatif n'a pas de sens pour un seul navire. */
 const NAV_ALWAYS = ['#/parametres'];
-function hiddenModules(){ try{ const a = JSON.parse(prefStore.getItem('sw_nav_hidden')||'[]'); return Array.isArray(a) ? a : []; }catch(e){ return []; } }
+/* modules masqués : fixés par l'administrateur dans le profil (navHidden, suit la personne sur tous ses appareils),
+   sinon réglage de cet appareil */
+const navFixedByAdmin = ()=>{ const p = currentProfile(); return !!p && Array.isArray(p.navHidden); };
+function hiddenModules(){
+  const p = currentProfile();
+  if(p && Array.isArray(p.navHidden)) return p.navHidden;
+  try{ const a = JSON.parse(prefStore.getItem('sw_nav_hidden')||'[]'); return Array.isArray(a) ? a : []; }catch(e){ return []; }
+}
 function visibleNav(){
   const hidden = new Set(hiddenModules());
   if(lockedVessel()) hidden.add('#/comparatif');
@@ -4214,6 +4412,7 @@ function shell(){
   renderFileAlerts();
   renderNetPill();
   renderBell();
+  document.body.classList.toggle('no-costs', !canSeeCosts());
 }
 function renderChrome(){
   $$('.sidebar').forEach(s=>s.classList.toggle('open', state.sidebarOpen));
@@ -4301,6 +4500,7 @@ function renderBell(){
   b.classList.toggle('active', state.route.startsWith('#/notifications'));
 }
 function renderContent(){
+  document.body.classList.toggle('no-costs', !canSeeCosts());
   keepingFocus(drawContent);
   renderBell();
   applyVesselTheme();
@@ -4333,6 +4533,7 @@ function drawPage(slot){
   if(r.startsWith('#/certificats-navire')) return viewCertifsNavire(slot);
   if(r.startsWith('#/equipage') || r.startsWith('#/certificats-marins')) return viewEquipage(slot);
   if(r.startsWith('#/profils')) return viewProfils(slot);
+  if(r.startsWith('#/mon-planning')) return viewMyPlanning(slot);
   if(r.startsWith('#/planning')) return viewPlanning(slot);
   if(r.startsWith('#/heures')) return viewHeures(slot);
   if(r.startsWith('#/historique')) return viewHistorique(slot);
@@ -5019,7 +5220,7 @@ function openTaskModal(t){
   const isEdit = !!t;
   const vessel = t?.vessel || state.activeVessel;
   const attachEl = attachmentsEditor(t?.attachments, {label:'Documents du job (procédure, schéma…)'});
-  const partsEl = partsEditor(vessel, t?.pieces, {label:'Pièces nécessaires', hint:'proposées à chaque « Fait » et sorties du stock', readOnly: !canEdit()});
+  const partsEl = partsEditor(vessel, t?.pieces, {label:'Pièces nécessaires', hint:'proposées à chaque « Fait » et sorties du stock'+(canSetSchedule() ? '' : ' · modifiables par l’administrateur ou le service technique'), readOnly: !canSetSchedule()});
   const dupRow = (isEdit && canEdit()) ? (()=>{
     const otherVessels = VESSELS.filter(v=>v.key!==vessel);
     if(otherVessels.length===0) return null;
@@ -5057,6 +5258,7 @@ function openTaskModal(t){
       field('Cycle (heures)','cycleHours','number', null, t?.cycleHours ?? '', 'ex. 5000')
     ),
     field('Observations','observations','textarea', null, t?.observations||''),
+    canSetSchedule() ? null : el('div',{class:'hint'}, 'Échéance, cycle et pièces : modifiables par l’administrateur ou le service technique.'),
     partsEl,
     attachEl,
     dupRow,
@@ -5064,6 +5266,7 @@ function openTaskModal(t){
     isEdit && canEdit() ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'dupliquer-tache', onclick:()=>openCopyToVesselModal('tasks', t.vessel, [t.id])}, 'Dupliquer vers d’autres navires…') : null,
     isEdit ? recordHistorySection(t) : null
   );
+  if(isEdit && !canSetSchedule()) lockFields(body, ['nextDate','cycleDays','cycleHours','periodicity','hoursAtLast','unit','meter'], 'Échéance modifiable par l’administrateur ou le service technique');
   openModal({
     title: isEdit ? 'Job récurrent — '+t.task : 'Nouveau job récurrent',
     body,
@@ -5110,7 +5313,7 @@ function openDoneModal(t){
   const byHours = t.unit==='heures';
   const suggestedNext = t.cycleDays ? addDays(todayISO(), t.cycleDays) : (byHours ? '' : (t.nextDate||''));
   const attachEl = attachmentsEditor([], {label: isDrill ? 'Rapport de drill (pièce jointe)' : 'Pièces jointes (optionnel)'});
-  const partsEl = partsEditor(t.vessel, t.pieces, {label:'Pièces utilisées', hint:'sorties du stock de l’inventaire à la validation'});
+  const partsEl = partsEditor(t.vessel, t.pieces, {label:'Pièces utilisées', hint:'vérifiez les quantités réellement utilisées (0 si aucune) : elles sortent du stock à la validation', lockArticle:!canSetSchedule(), canRemove:currentRole()==='admin', canAdd:canSetSchedule()});
   const body = el('div',{},
     el('div',{class:'hint', style:'margin-bottom:10px;'}, t.task+' · '+vesselName(t.vessel)),
     fieldRow(
@@ -5123,6 +5326,11 @@ function openDoneModal(t){
     isDrill ? null : partsEl,
     attachEl
   );
+  if(!canSetSchedule()){ // prochaine échéance calculée d'après le cycle, non modifiable
+    const ld = $('[name=lastDate]', body), nd = $('[name=nextDate]', body);
+    lockFields(body, ['nextDate'], 'Calculée d’après le cycle du job ; modifiable par l’administrateur ou le service technique');
+    if(ld && nd && Number(t.cycleDays)>0) ld.addEventListener('change', ()=>{ if(ld.value) nd.value = addDays(ld.value, Number(t.cycleDays)); });
+  }
   openModal({
     title: isDrill ? 'Exercice réalisé' : 'Marquer comme fait',
     body,
@@ -5163,6 +5371,8 @@ function openDoneModal(t){
    Les champs n'ont pas d'attribut name : la liste se lit par _getList(). */
 function partsEditor(vessel, existing, opts){
   opts = opts || {};
+  // lockArticle : article imposé (seule la quantité change) ; canRemove / canAdd : boutons « Retirer » / « Ajouter »
+  const canRemove = opts.canRemove!==false, canAdd = opts.canAdd!==false;
   const list = (existing||[]).map(p=>({id:uid(), inventoryId:p.inventoryId, qty:p.qty}));
   const wrap = el('div',{class:'parts-editor'});
   const items = ()=>state.inventory.filter(i=>i.vessel===vessel).sort((a,b)=>(a.designation||'').localeCompare(b.designation||'','fr'));
@@ -5171,7 +5381,7 @@ function partsEditor(vessel, existing, opts){
     wrap.appendChild(el('div',{class:'rh-title'}, (opts.label||'Pièces')+' ('+list.length+')'));
     if(opts.hint) wrap.appendChild(el('div',{class:'hint', style:'margin:0 0 6px;'}, opts.hint));
     list.forEach((p, i)=>{
-      const sel = el('select',{class:'select', style:'flex:1;min-width:180px;', 'aria-label':'Article', 'data-fk':'piece-'+i, disabled: opts.readOnly ? '' : null, onchange:e=>{ p.inventoryId = e.target.value; draw(); }},
+      const sel = el('select',{class:'select', style:'flex:1;min-width:180px;', 'aria-label':'Article', 'data-fk':'piece-'+i, disabled: opts.readOnly || (opts.lockArticle && p.inventoryId) ? '' : null, onchange:e=>{ p.inventoryId = e.target.value; draw(); }},
         el('option',{value:''},'— article de l’inventaire —'), ...items().map(it=>el('option',{value:it.id}, it.designation+(it.reference ? ' — '+it.reference : '')+' (stock '+(it.quantite ?? 0)+' '+(it.unite||'')+')')));
       sel.value = p.inventoryId || '';
       const item = state.inventory.find(x=>x.id===p.inventoryId);
@@ -5179,10 +5389,10 @@ function partsEditor(vessel, existing, opts){
         el('input',{type:'number', inputmode:'decimal', min:'0', step:'any', class:'select', style:'width:90px;', 'aria-label':'Quantité', 'data-fk':'piece-qte-'+i, value:p.qty ?? 1, readonly: opts.readOnly ? '' : null,
           oninput:e=>{ p.qty = e.target.value===''?'':Number(e.target.value); }}),
         el('span',{class:'hint', style:'margin:0;min-width:28px;'}, item ? item.unite||'' : ''),
-        opts.readOnly ? null : el('button',{class:'btn-danger-text', type:'button', 'aria-label':'Retirer cette pièce', onclick:()=>{ list.splice(i,1); draw(); }}, 'Retirer')));
+        opts.readOnly || !canRemove ? null : el('button',{class:'btn-danger-text', type:'button', 'aria-label':'Retirer cette pièce', onclick:()=>{ list.splice(i,1); draw(); }}, 'Retirer')));
     });
     if(!list.length) wrap.appendChild(el('div',{class:'hint'}, items().length ? 'Aucune pièce.' : 'Aucun article dans l’inventaire de '+vesselName(vessel)+'.'));
-    if(!opts.readOnly && items().length) wrap.appendChild(el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'ajouter-piece', style:'margin-top:6px;', onclick:()=>{ list.push({id:uid(), inventoryId:'', qty:1}); draw(); }},
+    if(!opts.readOnly && canAdd && items().length) wrap.appendChild(el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'ajouter-piece', style:'margin-top:6px;', onclick:()=>{ list.push({id:uid(), inventoryId:'', qty:1}); draw(); }},
       el('span',{html:iconPlus()}), 'Ajouter une pièce'));
   }
   draw();
@@ -5282,12 +5492,21 @@ function jobStatusBadge(s){
   const map = {'À faire':'inconnu','En cours':'proche','Terminé':'ok'};
   return `<span class="badge ${map[s]||'inconnu'}">${esc(jobStatusLabel(s))}</span>`;
 }
+/* job fait avec des pièces prévues : la sortie du stock est validée, quantité par quantité (0 si rien n'a servi) */
+function confirmPartsUse(vessel, parts, title){
+  return new Promise(resolve=>{
+    const ed = partsEditor(vessel, parts, {label:'Pièces utilisées', hint:'indiquez la quantité réellement utilisée, 0 si aucune', lockArticle:!canSetSchedule(), canRemove:currentRole()==='admin', canAdd:canSetSchedule()});
+    openModal({title:'Sortie des pièces — '+title, submitLabel:'Valider la sortie', body:el('div',{}, ed),
+      validate: ()=>partsStockError(ed._getList()),
+      onSubmit: async ()=>resolve(ed._getList()), onClose:()=>resolve(null)});
+  });
+}
 async function quickCompleteJob(j){
-  const err = !j.piecesSorties && (j.pieces||[]).length ? partsStockError(j.pieces) : null;
-  if(err){ toast(err); openJobModal(j); return; }
+  let parts = null;
+  if(!j.piecesSorties && (j.pieces||[]).length){ parts = await confirmPartsUse(j.vessel, j.pieces, j.titre); if(!parts) return; }
   await withUndo('Terminer « '+j.titre+' »', async ()=>{
     const upd = {statut:'Terminé', dateRealisation: todayISO()};
-    if(!j.piecesSorties && (j.pieces||[]).length){ upd.pieces = consumeParts(j.pieces, 'Job « '+j.titre+' »', {jobId:j.id}).map(p=>({...p, id:uid()})); upd.piecesSorties = true; }
+    if(parts){ upd.pieces = consumeParts(parts, 'Job « '+j.titre+' »', {jobId:j.id}).map(p=>({...p, id:uid()})); upd.piecesSorties = true; }
     await updateDoc('jobs','jobs', j.id, upd);
     await logHistory('jobs', j.id, j.titre, 'terminé', j.vessel);
     toast('Job marqué terminé', 'success');
@@ -5300,7 +5519,7 @@ function openJobModal(j, prefill){
   const vessel = base.vessel || state.activeVessel;
   const attachEl = attachmentsEditor(j?.attachments);
   const consumed = !!(j && j.piecesSorties);
-  const partsEl = partsEditor(vessel, base.pieces, {label:'Pièces utilisées', readOnly: consumed || !canEdit(),
+  const partsEl = partsEditor(vessel, base.pieces, {label:'Pièces utilisées', readOnly: consumed || !canEdit(), lockArticle:!canSetSchedule(), canRemove:currentRole()==='admin', canAdd:canSetSchedule(),
     hint: consumed ? 'sorties du stock à la clôture du job' : 'sorties du stock quand le job passe à « Terminé »'});
   const body = el('div',{},
     field('Navire','vessel','select', VESSELS.map(v=>({v:v.key,l:v.name})), vessel),
@@ -5327,6 +5546,7 @@ function openJobModal(j, prefill){
       isEdit ? el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>openNcModal(jobNc(base))}, 'Ouvrir la fiche') : null) : null,
     isEdit ? recordHistorySection(j) : null
   );
+  if(isEdit && !canSetSchedule()) lockFields(body, ['dateEcheance'], 'Échéance modifiable par l’administrateur ou le service technique');
   openModal({
     title: isEdit ? 'Job ponctuel — '+j.titre : 'Nouveau job ponctuel',
     body,
@@ -5751,8 +5971,8 @@ function viewEquipements(slot){
   const search = el('div',{class:'search-box'}, el('span',{html:iconSearch()}), el('input',{type:'search', 'aria-label':'Rechercher un élément…', 'data-fk':'recherche', placeholder:'Rechercher un élément…', value:state._eqSearch||'', oninput:e=>{state._eqSearch=e.target.value.toLowerCase(); renderContent();}}));
   slot.appendChild(el('div',{class:'toolbar'}, search,
     canConfigure() ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'elements-categories', onclick:openEquipCatsModal}, 'Catégories…') : null,
-    canEdit() ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'elements-copier', onclick:()=>openCopyToVesselModal('equipment')}, 'Copier vers…') : null,
-    addButtonIfAllowed('Ajouter un élément', ()=>openEquipmentModal())
+    canManageFleetData() ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'elements-copier', onclick:()=>openCopyToVesselModal('equipment')}, 'Copier vers…') : null,
+    canManageFleetData() ? addButtonIfAllowed('Ajouter un élément', ()=>openEquipmentModal()) : null
   ));
   let filtered = rows;
   if(state._eqSearch) filtered = filtered.filter(e=>e.name.toLowerCase().includes(state._eqSearch));
@@ -5768,7 +5988,7 @@ function viewEquipements(slot){
     const direct = c ? EQUIP_LINK_KEYS.reduce((n,k)=>n+state[k].filter(r=>r.equipCat===c && r.vessel===state.activeVessel).length, 0) : 0;
     const card = el('div',{class:'card', style:'padding:16px 18px;margin-bottom:12px;', 'data-fk':'categorie-'+normText(c||'sans').replace(/\W+/g,'-')},
       el('div',{class:'section-head', style:'margin-bottom:6px;'}, el('h2',{style:'font-size:15.5px;margin:0;'}, c||'Sans catégorie', el('span',{class:'hint', style:'margin-left:8px;font-weight:400;'}, list.length+' élément(s)'+(direct ? ' · '+direct+' fiche(s) liée(s) à la catégorie' : ''))),
-        el('div',{style:'display:flex;gap:6px;'}, c ? equipHistoryLink(c, '', state.activeVessel) : null, c && canEdit() ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'ajouter-dans-'+normText(c).replace(/\W+/g,'-'), onclick:()=>openEquipmentModal(null, {categorie:c})}, 'Ajouter') : null)));
+        el('div',{style:'display:flex;gap:6px;'}, c ? equipHistoryLink(c, '', state.activeVessel) : null, c && canManageFleetData() ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'ajouter-dans-'+normText(c).replace(/\W+/g,'-'), onclick:()=>openEquipmentModal(null, {categorie:c})}, 'Ajouter') : null)));
     if(list.length){
       const tbody = el('tbody',{});
       list.slice().sort((a,b)=>a.name.localeCompare(b.name,'fr')).forEach(eq=>{
@@ -5782,7 +6002,7 @@ function viewEquipements(slot){
     }
     slot.appendChild(card);
   });
-  slot.appendChild(fabIfAllowed(()=>openEquipmentModal()));
+  if(canManageFleetData()) slot.appendChild(fabIfAllowed(()=>openEquipmentModal()));
 }
 /* arborescence : catégories (partagées par la flotte, réglage equipCats) > éléments (par navire) */
 const DEFAULT_EQUIP_CATS = ['Moteurs','Propulsion','Auxiliaire','Sécurité'];
@@ -5859,7 +6079,7 @@ function openEquipmentModal(eq, prefill){
   openModal({
     title: isEdit?'Modifier l’élément':'Nouvel élément du navire',
     body,
-    readOnly: !canEdit(),
+    readOnly: !canManageFleetData(),
     validate: (data)=>requireField(data,'name','Le nom de l’élément'),
     onDelete: isEdit ? async ()=>{ await deleteDoc('equipment','equipment', eq.id); await logHistory('equipment', eq.id, eq.name, 'supprimé', eq.vessel); toast('Élément supprimé'); } : null,
     onSubmit: async (data)=>{
@@ -5957,13 +6177,18 @@ function viewInventaire(slot){
   const byRef = state._invLoc==='__ref';
   const loc = byRef ? null : currentInvLoc();
   const onShore = !!loc && loc.startsWith('site:');
-  slot.appendChild(vesselTabs({none: byRef || onShore, onPick:()=>{ state._invLoc = ''; }}));
-  slot.appendChild(el('div',{class:'segmented inv-places', role:'group', 'aria-label':'Stocks à terre et vue d’ensemble'},
+  // une seule ligne d'onglets : les navires, « Autre » (lieux à terre, sans lieu) et la vue de tous les lieux
+  const mk = (on, fk, label, pick)=>el('button',{type:'button', role:'tab', 'aria-selected':String(on), class:'tab'+(on ? ' active' : ''), 'data-fk':fk, onclick:()=>{ pick(); renderContent(); }}, label);
+  const firstOther = (inventorySites()[0] ? 'site:'+inventorySites()[0].v : 'site:'+NO_SITE);
+  slot.appendChild(el('div',{class:'company-tabs'}, vesselTabs({none: byRef || onShore, onPick:()=>{ state._invLoc = ''; }}),
+    el('div',{class:'tabs', role:'tablist', 'aria-label':'Autres lieux'},
+      mk(onShore, 'inv-autre', 'Autre'+(invNoSiteCount() ? ' ('+invNoSiteCount()+' sans lieu)' : ''), ()=>{ state._invLoc = onShore ? loc : firstOther; }),
+      mk(byRef, 'inv-par-reference', 'Tous lieux', ()=>{ state._invLoc = '__ref'; }))));
+  if(onShore) slot.appendChild(el('div',{class:'segmented seg-wrap inv-places', role:'group', 'aria-label':'Lieux à terre'},
     ...inventorySites().map(s=>el('button',{type:'button', class:'seg'+(loc==='site:'+s.v ? ' active' : ''), 'aria-pressed':String(loc==='site:'+s.v), 'data-fk':'inv-lieu-'+s.v,
       onclick:()=>{ state._invLoc = 'site:'+s.v; renderContent(); }}, s.l)),
-    invNoSiteCount() || loc==='site:'+NO_SITE ? el('button',{type:'button', class:'seg'+(loc==='site:'+NO_SITE ? ' active' : ''), 'aria-pressed':String(loc==='site:'+NO_SITE), 'data-fk':'inv-lieu-'+NO_SITE,
-      onclick:()=>{ state._invLoc = 'site:'+NO_SITE; renderContent(); }}, 'Sans lieu ('+invNoSiteCount()+')') : null,
-    el('button',{type:'button', class:'seg'+(byRef ? ' active' : ''), 'aria-pressed':String(byRef), 'data-fk':'inv-par-reference', onclick:()=>{ state._invLoc = '__ref'; renderContent(); }}, 'Vue par référence (tous lieux)'),
+    el('button',{type:'button', class:'seg'+(loc==='site:'+NO_SITE ? ' active' : ''), 'aria-pressed':String(loc==='site:'+NO_SITE), 'data-fk':'inv-lieu-'+NO_SITE,
+      onclick:()=>{ state._invLoc = 'site:'+NO_SITE; renderContent(); }}, 'Sans lieu ('+invNoSiteCount()+')'),
     canConfigure() ? el('button',{type:'button', class:'seg', 'data-fk':'inv-lieux', onclick:openInventorySitesModal}, 'Lieux à terre…') : null));
   const brandSel = el('select',{class:'select', 'aria-label':'Filtrer par marque', 'data-fk':'filtre-marque', onchange:e=>{ state._invBrand = e.target.value; renderContent(); }},
     el('option',{value:''},'Toutes marques'), ...invBrands().map(b=>el('option',{value:b}, b)));
@@ -5974,7 +6199,7 @@ function viewInventaire(slot){
   const natureTabs = [['','Tous', rows.length], ...inventoryNatures().map(n=>[n.v, n.pl||n.l, rows.filter(r=>r.nature===n.v).length])];
   if(unclassified) natureTabs.push(['__aucune','Non classés', unclassified]);
   if(!natureTabs.some(([k])=>k===(state._invNature||''))) state._invNature = '';
-  const natureSwitch = el('div',{class:'segmented', role:'group', 'aria-label':'Type d’article'},
+  const natureSwitch = el('div',{class:'segmented seg-wrap', role:'group', 'aria-label':'Type d’article'},
     ...natureTabs.map(([k,l,n])=>el('button',{type:'button', class:'seg'+((state._invNature||'')===k?' active':''), 'aria-pressed':String((state._invNature||'')===k), 'data-fk':'inv-nature-'+(k||'tous'),
       onclick:()=>{ state._invNature = k; renderContent(); }}, l+' ('+n+')')));
   const search = el('div',{class:'search-box'}, el('span',{html:iconSearch()}), el('input',{type:'search', 'aria-label':'Rechercher un article…', 'data-fk':'recherche', placeholder:'Rechercher (désignation, référence, fournisseur, emplacement)…', value:state._invSearch||'', oninput:e=>{state._invSearch=e.target.value.toLowerCase(); renderContent();}}));
@@ -5994,6 +6219,17 @@ function viewInventaire(slot){
   if(state._invBrand) filtered = filtered.filter(r=>(r.marque||'')===state._invBrand);
   if(state._invSearch) filtered = filtered.filter(r=>[r.designation, r.reference, r.refFournisseur, r.fournisseur, r.marque, r.emplacement].join(' ').toLowerCase().includes(state._invSearch));
   if(!onShore) filtered = filtered.filter(r=>matchesEquipment(r, state._invEq));
+  // tri par colonne et regroupement (élément ou catégorie, famille, emplacement, type)
+  const fs = state._invSort = state._invSort || {sort:'article', dir:1, group:''};
+  const eqCat = r=>r.equipCat || (state.equipment.find(e=>e.id===r.equipmentId)||{}).categorie || '';
+  const getters = {article:r=>r.designation, type:r=>inventoryNatureLabel(r), famille:r=>r.categorie, element:r=>equipLabel(r)||'', quantite:r=>String(Number(r.quantite)||0).padStart(10, '0'), emplacement:r=>r.emplacement};
+  const groupers = {element:r=>eqCat(r) ? eqCat(r)+(r.equipmentId ? ' › '+equipmentName(r.equipmentId) : '') : 'Sans élément lié', categorie:r=>eqCat(r)||'Sans catégorie', famille:r=>r.categorie||'Sans famille', emplacement:r=>r.emplacement||'Sans emplacement', type:r=>inventoryNatureLabel(r)};
+  filtered = sortRows(filtered, fs, getters);
+  if(fs.group && groupers[fs.group]) filtered = filtered.slice().sort((a,b)=>groupers[fs.group](a).localeCompare(groupers[fs.group](b),'fr'));
+  const groupSel = el('select',{class:'select', 'aria-label':'Regrouper', 'data-fk':'inv-grouper', onchange:e=>{ fs.group = e.target.value; renderContent(); }},
+    ...[['','Sans regroupement'],['categorie','Par catégorie du navire'],['element','Par élément du navire'],['famille','Par famille de pièce'],['emplacement','Par emplacement'],['type','Par type']].map(([v,l])=>el('option',{value:v}, l)));
+  groupSel.value = fs.group;
+  slot.appendChild(el('div',{class:'toolbar'}, groupSel, el('span',{class:'hint', style:'margin:0;'}, 'Cliquez un titre de colonne pour trier.')));
 
   if(loc==='site:'+NO_SITE && rows.length) slot.appendChild(el('div',{class:'banner', role:'status'},
     rows.length+' article(s) sans lieu de stockage (lieu retiré ou pas encore choisi) : ouvrez chaque article et choisissez son lieu.'));
@@ -6014,11 +6250,13 @@ function viewInventaire(slot){
   const card = el('div',{class:'card', style:'padding:16px 18px;'});
   const wrap = el('div',{class:'table-wrap'});
   const table = el('table',{},
-    el('thead',{}, el('tr',{}, el('th',{},'Article'), el('th',{},'Type'), el('th',{},'Catégorie'), el('th',{},'Quantité'), el('th',{},'Emplacement'), el('th',{})))
+    el('thead',{}, el('tr',{}, sortableTh('Article','article',fs), sortableTh('Type','type',fs), sortableTh('Famille','famille',fs), sortableTh('Élément / catégorie','element',fs), sortableTh('Quantité','quantite',fs), sortableTh('Emplacement','emplacement',fs), el('th',{})))
   );
   const tbody = el('tbody',{});
   const sub = txt=>el('div',{style:'font-size:12px;color:var(--text-soft);margin-top:2px;'}, txt);
+  let lastGroup = null;
   filtered.forEach(r=>{
+    if(fs.group && groupers[fs.group]){ const g = groupers[fs.group](r); if(g!==lastGroup){ lastGroup = g; tbody.appendChild(el('tr',{class:'inv-group', 'data-fk':'inv-groupe'}, el('th',{colspan:'7', scope:'colgroup'}, g+' ('+filtered.filter(x=>groupers[fs.group](x)===g).length+')'))); } }
     const low = inventoryIsLow(r);
     const lift = liftingStatus(r);
     const eqn = equipLabel(r);
@@ -6029,11 +6267,11 @@ function viewInventaire(slot){
         r.marque || r.fournisseur ? sub([r.marque, r.fournisseur].filter(Boolean).join(' · ')) : null,
         r.nature==='levage' && (r.cmu || r.longueur || r.etat || r.dateVerification) ? sub(
           [r.cmu ? 'CMU '+r.cmu : '', r.longueur ? 'L '+r.longueur : '', r.etat ? 'état : '+r.etat : '', r.dateVerification ? 'vérification avant le '+fmtDate(r.dateVerification) : ''].filter(Boolean).join(' · ')) : null,
-        r.notes ? sub(r.notes) : null,
-        eqn?el('div',{}, el('span',{class:'link-tag'}, eqn)):null
+        r.notes ? sub(r.notes) : null
       ),
       el('td',{}, el('span',{class:'nature-tag nature-'+(r.nature||'aucune')}, inventoryNatureLabel(r))),
       el('td',{html:`<span class="cat-tag">${esc(r.categorie||'—')}</span>`}),
+      el('td',{}, eqn ? el('span',{class:'link-tag'}, eqn) : '—'),
       el('td',{}, `${r.quantite ?? '—'} ${r.unite||''}`,
         r.seuilAlerte!=null && r.seuilAlerte!=='' ? sub('mini '+r.seuilAlerte) : null,
         r.enPlace!=null && r.enPlace!=='' ? sub('en place : '+r.enPlace) : null,
@@ -6493,8 +6731,28 @@ function openStockMoveModal(item, opts){
 function openStockPickModal(vessel){
   const items = state.inventory.filter(i=>i.vessel===vessel).sort((a,b)=>(a.designation||'').localeCompare(b.designation||'','fr'));
   if(!items.length){ toast('Aucun article dans l’inventaire de '+vesselName(vessel)); return; }
+  // recherche et filtre par élément ou catégorie du navire, au lieu d'une longue liste déroulante
+  const hidden = el('input',{type:'hidden', name:'itemId', value:''});
+  const list = el('div',{class:'pick-list', role:'listbox', 'aria-label':'Articles', 'data-fk':'sortie-liste'});
+  const q = el('input',{type:'search', class:'select', placeholder:'Rechercher : désignation, référence, emplacement…', 'aria-label':'Rechercher un article', 'data-fk':'sortie-recherche', style:'width:100%;'});
+  const eqSel = el('select',{class:'select', 'aria-label':'Élément ou catégorie', 'data-fk':'sortie-element', style:'width:100%;margin-top:6px;'},
+    el('option',{value:''}, 'Tous les éléments et catégories'), ...equipmentLinkOptions(vessel).slice(1).map(o=>el('option',{value:o.v}, o.l)));
+  const draw = ()=>{
+    const words = normText(q.value).split(/\s+/).filter(Boolean);
+    const shown = items.filter(i=>(!eqSel.value || matchesEquipment(i, eqSel.value)) && words.every(w=>normText([i.designation, i.reference, i.refFournisseur, i.marque, i.emplacement, i.categorie, equipLabel(i)].join(' ')).includes(w)));
+    list.innerHTML = '';
+    if(!shown.some(i=>i.id===hidden.value)) hidden.value = shown.length===1 ? shown[0].id : '';
+    shown.slice(0, 60).forEach(i=>list.appendChild(el('button',{type:'button', role:'option', 'aria-selected':String(hidden.value===i.id), class:'pick-row'+(hidden.value===i.id ? ' active' : ''), 'data-fk':'sortie-'+i.id,
+      onclick:()=>{ hidden.value = i.id; draw(); }},
+      el('span',{}, i.designation, el('span',{class:'hint', style:'margin:0;display:block;'}, [i.reference ? 'réf. '+i.reference : '', equipLabel(i), i.emplacement].filter(Boolean).join(' · '))),
+      el('span',{style:'white-space:nowrap;'}, (i.quantite ?? 0)+' '+(i.unite||'')))));
+    if(!shown.length) list.appendChild(el('div',{class:'hint', style:'padding:8px 10px;margin:0;'}, 'Aucun article ne correspond.'));
+    else if(shown.length>60) list.appendChild(el('div',{class:'hint', style:'padding:8px 10px;margin:0;'}, (shown.length-60)+' autre(s) : précisez la recherche.'));
+  };
+  q.addEventListener('input', draw); eqSel.addEventListener('change', draw);
+  draw();
   const body = el('div',{},
-    field('Article','itemId','select', items.map(i=>({v:i.id, l:i.designation+(i.reference ? ' — '+i.reference : '')+' ('+(i.quantite ?? 0)+' '+(i.unite||'')+')'})), items[0].id),
+    el('div',{class:'field'}, el('label',{}, 'Article'), q, eqSel, list, hidden),
     fieldRow(field('Quantité utilisée','qty','number', null, 1), field('Date','date','date', null, todayISO())),
     field('Motif','motif','text', null, '', 'ex. vidange MP bâbord, remplacement filtre'));
   openModal({title:'Sortie de pièce — '+vesselName(vessel), body, submitLabel:'Valider', readOnly: !canInput(),
@@ -6789,7 +7047,7 @@ function openOrderModal(r, prefill){
       field('Adresse e-mail du fournisseur','fournisseurEmail','email', null, base.fournisseurEmail||'')),
     fieldRow(
       field('Quantité','quantite','number', null, base.quantite ?? ''),
-      field('Prix estimé (€)','prixEstime','number', null, base.prixEstime ?? '')),
+      el('div',{class:'field cost-only', style:'margin:0;'}, field('Prix estimé (€)','prixEstime','number', null, base.prixEstime ?? ''))),
     field('Suivie par','suiviPar','text', null, base.suiviPar||'', 'personne qui suit la commande (relances, livraison)'),
     fieldRow(
       field('Demandée par','demandeur','text', null, base.demandeur || (isEdit ? '' : state.me.name||'')),
@@ -7077,7 +7335,7 @@ function fuelEntries(){
   state.fuel.forEach(r=>{
     if(r.type===FUEL_LEVELS) return; // un relevé de niveau n'est pas une entrée de carburant
     if(Array.isArray(r.lignes)) r.lignes.forEach(l=>{
-      const t = tankDef(l.caisse);
+      const t = tankDef(l.caisse, r.vessel);
       out.push({vessel:r.vessel||'', date:r.date, type:t.type, caisse:t.k, quantite:Number(l.quantite)||0, unite:'L', compteur:t.meter||'aucun',
         cost:lineCost(l.quantite, l.prixLitre, l.prixTotal), rec:r});
     });
@@ -7165,7 +7423,7 @@ function viewCarburant(slot){
     if(stock.length){
       const tiles = el('div',{class:'grid-cards', style:'margin-bottom:14px;', 'data-fk':'stock-compagnie'});
       stock.forEach(s=>tiles.appendChild(el('div',{class:'card stat-card'}, el('div',{class:'k'}, 'Stock '+s.type.toLowerCase()+' · '+siteName(s.site)), el('div',{class:'v conso-v'}, fmtNum(s.litres)+' L'),
-        el('div',{class:'stat-sub'}, s.prixLitre!=null ? 'prix moyen '+fmtNum(s.prixLitre, 3)+' €/L · valeur '+fmtEuros(round2(Math.max(0, s.litres)*s.prixLitre)) : 'achats sans prix'))));
+        el('div',{class:'stat-sub cost-only'}, s.prixLitre!=null ? 'prix moyen '+fmtNum(s.prixLitre, 3)+' €/L · valeur '+fmtEuros(round2(Math.max(0, s.litres)*s.prixLitre)) : 'achats sans prix'))));
       slot.appendChild(tiles);
     }
   }
@@ -7179,9 +7437,9 @@ function viewCarburant(slot){
     const tl = tripLogReadings(owner).pop();
     const tiles = el('div',{class:'grid-cards', style:'margin-bottom:14px;'});
     const tile = (k, v, sub)=>tiles.appendChild(el('div',{class:'card stat-card'}, el('div',{class:'k'}, k), el('div',{class:'v conso-v'}, v), sub ? el('div',{class:'stat-sub'}, sub) : null));
-    tile('Dernier soutage', last ? fmtDate(last.date) : '—', last ? fmtNum(fuelRecordLitres(last))+' L'+(fuelRecordCost(last)!=null ? ' · '+fmtEuros(fuelRecordCost(last)) : '') : 'aucun soutage enregistré');
-    tile('Gasoil sur 12 mois', fmtNum(sum(go,'quantite'))+' L', go.some(e=>e.cost!=null) ? fmtEuros(sum(go,'cost'))+' · bâbord '+fmtNum(sum(go.filter(e=>e.caisse==='go-bd'),'quantite'))+' L · tribord '+fmtNum(sum(go.filter(e=>e.caisse==='go-td'),'quantite'))+' L' : 'prix non renseignés');
-    tile('Huile sur 12 mois', fmtNum(sum(oil,'quantite'))+' L', oil.some(e=>e.cost!=null) ? fmtEuros(sum(oil,'cost')) : 'prix non renseignés');
+    tile('Dernier soutage', last ? fmtDate(last.date) : '—', last ? fmtNum(fuelRecordLitres(last))+' L'+(canSeeCosts() && fuelRecordCost(last)!=null ? ' · '+fmtEuros(fuelRecordCost(last)) : '') : 'aucun soutage enregistré');
+    tile('Gasoil sur 12 mois', fmtNum(sum(go,'quantite'))+' L', go.some(e=>e.cost!=null) && canSeeCosts() ? fmtEuros(sum(go,'cost'))+' · bâbord '+fmtNum(sum(go.filter(e=>e.caisse==='go-bd'),'quantite'))+' L · tribord '+fmtNum(sum(go.filter(e=>e.caisse==='go-td'),'quantite'))+' L' : 'prix non renseignés');
+    tile('Huile sur 12 mois', fmtNum(sum(oil,'quantite'))+' L', !canSeeCosts() ? '' : oil.some(e=>e.cost!=null) ? fmtEuros(sum(oil,'cost')) : 'prix non renseignés');
     tile('Trip log', tl ? fmtNum(tl.v)+' milles' : '—', tl ? 'relevé le '+fmtDate(tl.date)+' · '+fmtNum(tripLogMiles(owner, from, to))+' milles sur 12 mois' : 'à relever à chaque soutage');
     slot.appendChild(tiles);
   }
@@ -7194,7 +7452,7 @@ function viewCarburant(slot){
   }
   const card = el('div',{class:'card', style:'padding:16px 18px;'});
   const wrap = el('div',{class:'table-wrap'});
-  const table = el('table',{}, el('thead',{}, el('tr',{}, el('th',{},'Date'), el('th',{},'Type'), el('th',{},'Quantité'), el('th',{},'Prix'),
+  const table = el('table',{}, el('thead',{}, el('tr',{}, el('th',{},'Date'), el('th',{},'Type'), el('th',{},'Quantité'), el('th',{class:'cost-only'},'Prix'),
     el('th',{}, company ? 'Lieu' : 'Compteur / trip log'), el('th',{},'Facture'), el('th',{},'Notes'))));
   const tbody = el('tbody',{});
   rows.forEach(r=>{
@@ -7208,7 +7466,7 @@ function viewCarburant(slot){
         soutage ? el('div',{class:'hint', style:'margin:3px 0 0;'}, r.lignes.filter(l=>Number(l.quantite)>0).map(l=>tankDef(l.caisse).l+' '+fmtNum(l.quantite)+' L').join(' · ')) : null,
         r.fournisseur ? el('div',{class:'hint', style:'margin:2px 0 0;'}, r.fournisseur) : null),
       el('td',{style:'white-space:nowrap;'}, soutage ? fmtNum(fuelRecordLitres(r))+' L' : `${r.quantite ?? '—'} ${r.unite||''}`),
-      el('td',{style:'white-space:nowrap;'}, cost!=null ? fmtEuros(round2(cost)) : '—',
+      el('td',{class:'cost-only', style:'white-space:nowrap;'}, cost!=null ? fmtEuros(round2(cost)) : '—',
         !soutage && r.prixLitre!=null && r.prixLitre!=='' ? el('div',{class:'hint', style:'margin:2px 0 0;'}, fmtNum(r.prixLitre, 3)+' €/L') : null),
       el('td',{}, company ? (r.site ? siteName(r.site) : '—')
         : [r.compteurHeures!=null && r.compteurHeures!=='' ? meterLabel(r.compteur, r.vessel)+' : '+fmtHours(r.compteurHeures) : '', r.tripLog!=null && r.tripLog!=='' ? 'trip log '+fmtNum(r.tripLog)+' milles' : ''].filter(Boolean).join(' · ') || '—'),
@@ -7240,10 +7498,10 @@ function openFuelModal(r, prefill){
       field('Quantité','quantite','number', null, base.quantite ?? ''),
       field('Unité','unite','text', null, base.unite||'L', 'L, kg…')
     ),
-    fieldRow(
+    el('div',{class:'cost-only'}, fieldRow(
       field('Prix au litre (€)','prixLitre','number', null, base.prixLitre ?? ''),
       field('Prix total (€)','prixTotal','number', null, base.prixTotal ?? '', 'calculé si vide')
-    ),
+    )),
     field('Fournisseur','fournisseur','text', null, base.fournisseur||''),
     el('div',{class:'fuel-company-only'}, field('Lieu de stockage','site','select', inventorySites().map(s=>({v:s.v, l:s.l})), base.site||'chantier', 'où le carburant ou l’huile achetés pour la compagnie sont stockés')),
     el('div',{class:'fuel-vessel-only'},
@@ -7306,7 +7564,7 @@ function openSoutageModal(r, prefill){
     q.addEventListener('input', ()=>{ if(q.value!=='' && pl.value!=='') pt.value = String(round2(Number(q.value)*Number(pl.value))); sumUp(); });
     pl.addEventListener('input', ()=>{ if(q.value!=='' && pl.value!=='') pt.value = String(round2(Number(q.value)*Number(pl.value))); sumUp(); });
     pt.addEventListener('input', ()=>{ if(q.value!=='' && Number(q.value)>0 && pt.value!=='') pl.value = String(Math.round(Number(pt.value)/Number(q.value)*1000)/1000); sumUp(); });
-    tbody.appendChild(el('tr',{class:t.type==='Gazole' ? 'fuel-go' : 'fuel-oil', 'data-caisse':t.k}, el('th',{scope:'row'}, t.l), el('td',{}, q), el('td',{}, pl), el('td',{}, pt)));
+    tbody.appendChild(el('tr',{class:t.type==='Gazole' ? 'fuel-go' : 'fuel-oil', 'data-caisse':t.k}, el('th',{scope:'row'}, t.l), el('td',{}, q), el('td',{class:'cost-only'}, pl), el('td',{class:'cost-only'}, pt)));
   });
   function sumUp(){
     let litres = 0, cost = 0, hasCost = false;
@@ -7314,7 +7572,7 @@ function openSoutageModal(r, prefill){
       const q = Number($('[name="q-'+t.k+'"]', body).value)||0, c = lineCost(q, $('[name="pl-'+t.k+'"]', body).value, $('[name="pt-'+t.k+'"]', body).value);
       litres += q; if(c!=null){ cost += c; hasCost = true; }
     });
-    totalBox.textContent = 'Total : '+fmtNum(litres)+' L'+(hasCost ? ' · '+fmtEuros(round2(cost)) : '');
+    totalBox.textContent = 'Total : '+fmtNum(litres)+' L'+(hasCost && canSeeCosts() ? ' · '+fmtEuros(round2(cost)) : '');
   }
   const body = el('div',{},
     fieldRow(
@@ -7329,7 +7587,7 @@ function openSoutageModal(r, prefill){
     field('Valeur du compteur (h)','compteurHeures','number', null, base.compteurHeures ?? '', 'facultatif : met à jour le compteur horaire'),
     el('div',{class:'field'}, el('div',{class:'field-label'}, 'Caisses (quantité, prix au litre, prix total — l’un des deux prix suffit)'),
       el('div',{class:'table-wrap'}, el('table',{class:'compact-table fuel-tanks'},
-        el('thead',{}, el('tr',{}, el('th',{},'Caisse'), el('th',{},'Quantité (L)'), el('th',{},'Prix / L (€)'), el('th',{},'Total (€)'))), tbody)),
+        el('thead',{}, el('tr',{}, el('th',{},'Caisse'), el('th',{},'Quantité (L)'), el('th',{class:'cost-only'},'Prix / L (€)'), el('th',{class:'cost-only'},'Total (€)'))), tbody)),
       totalBox),
     field('Notes','notes','textarea', null, base.notes||''),
     attachEl);
@@ -7555,7 +7813,7 @@ function openCrewModal(m, prefill){
     ),
     crewPostInput(field('Poste habituel','poste','text', null, base.poste||'')),
     fieldRow(field('Téléphone','telephone','tel', null, base.telephone||''), field('Adresse e-mail','email','email', null, base.email||'')),
-    field('Adresse postale','adresse','textarea', null, base.adresse||''),
+    ['admin','technique'].includes(currentRole()) ? field('Adresse postale','adresse','textarea', null, base.adresse||'', 'visible par l’administrateur et le service technique') : null,
     field('Date de naissance','dateNaissance','date', null, base.dateNaissance||''),
     vesselChecks('Qualifié sur les navires', qualifB, 'qb'),
     field('Habilitation grue','habilGrue','select', [{v:'non',l:'Non'},{v:'oui',l:'Oui'}], base.habilGrue||'non'),
@@ -7577,7 +7835,7 @@ function openCrewModal(m, prefill){
     title: isEdit ? crewFullName(m) : 'Nouveau marin',
     body,
     wide: isEdit,
-    readOnly: !canEdit(),
+    readOnly: !canManageFleetData(),
     deleteMessage: isEdit ? (()=>{ const na = state.crewAssignments.filter(a=>a.crewId===m.id).length, np = state.crewPlan.filter(r=>r.crewId===m.id).length;
       return 'Supprimer la fiche de '+crewFullName(m)+(na || np ? ' avec '+[na ? na+' affectation(s)' : '', np ? np+' jour(s) de planning' : ''].filter(Boolean).join(' et ') : '')+' ?'; })() : null,
     validate: data=>(!String(data.nom).trim() && !String(data.prenom).trim()) ? 'Le nom ou le prénom est obligatoire.' : null,
@@ -7736,6 +7994,7 @@ function viewProfils(slot){
   const relayAdmin = viaRelay && state.driveFile.relay.admin && canManageProfiles();
   // liens existants de chaque profil : relus une fois, puis la page est redessinée
   if(relayAdmin && !state._relayLinks) loadRelayLinks().then(()=>{ if(state.route.startsWith('#/profils')) renderContent(); });
+  if(relayAdmin) slot.appendChild(presenceCard());
   if(relayAdmin && relayOutdated()) slot.appendChild(el('div',{class:'banner banner-danger', role:'status', 'data-fk':'relais-a-jour'},
     el('div',{style:'flex:1;'}, el('strong',{}, 'Relais à mettre à jour (version '+relayVersion()+', attendue : '+RELAY_EXPECTED+').'),
       ' Dans le script (script.google.com) : remplacez Code.gs par relais/Code.gs, enregistrez, puis « Déployer » › « Gérer les déploiements » › déploiement « Application Web » › crayon › Version : « Nouvelle version » › « Déployer ». '
@@ -7786,6 +8045,16 @@ function openProfileModal(u, prefill){
   const own = isEdit && !!currentProfile() && currentProfile().id===u.id;
   const editable = admin || (own && uiWritable());
   const firstAdmin = !hasAdminProfile();
+  // administrateur : modules du menu de cette personne, réglés à distance (sinon chacun règle son appareil)
+  const navSet = new Set(Array.isArray(base.navHidden) ? base.navHidden : []);
+  const navBox = el('div',{class:'report-sections', role:'group', 'aria-label':'Modules du menu de cette personne', 'data-fk':'profil-modules'},
+    ...NAV.filter(n=>!NAV_ALWAYS.includes(n.route)).map(n=>el('label',{class:'check'}, el('input',{type:'checkbox', 'data-fk':'profil-module-'+n.route.slice(2), checked:navSet.has(n.route) ? null : '',
+      onchange:e=>{ if(e.target.checked) navSet.delete(n.route); else navSet.add(n.route); }}), n.label)));
+  const navMode = el('select',{class:'select', name:'menuMode', 'aria-label':'Réglage du menu', 'data-fk':'profil-menu-mode', onchange:()=>{ navBox.style.display = navMode.value==='fixe' ? '' : 'none'; }},
+    el('option',{value:''}, 'Laissé à la personne (réglage de chacun de ses appareils)'), el('option',{value:'fixe'}, 'Fixé par l’administrateur (tous ses appareils)'));
+  navMode.value = Array.isArray(base.navHidden) ? 'fixe' : '';
+  navBox.style.display = navMode.value==='fixe' ? '' : 'none';
+  const navHiddenEditor = el('div',{class:'record-history'}, el('div',{class:'rh-title'}, 'Modules affichés dans son menu'), navMode, navBox);
   const body = el('div',{},
     fieldRow(field('Nom','nom','text', null, base.nom||''), field('Prénom','prenom','text', null, base.prenom||'')),
     fieldRow(
@@ -7799,6 +8068,7 @@ function openProfileModal(u, prefill){
       field('Fiche marin liée','crewId','select', [{v:'',l:'—'}, ...state.crew.slice().sort((a,b)=>crewFullName(a).localeCompare(crewFullName(b),'fr')).map(m=>({v:m.id, l:crewFullName(m)+(m.poste ? ' — '+m.poste : '')}))], base.crewId||'', 'pour un navigant'),
       field('Compte actif','actif','select', [{v:'oui',l:'Oui'},{v:'non',l:'Non (désactivé)'}], base.actif||'oui')),
     field('Notes','notes','textarea', null, base.notes||''),
+    admin ? navHiddenEditor : null,
     isEdit ? recordHistorySection(u) : null
   );
   if(!admin) ['role','email','actif','vessel','type'].forEach(n=>{ const i = $('[name='+n+']', body); if(i) i.disabled = true; });
@@ -7827,6 +8097,7 @@ function openProfileModal(u, prefill){
     },
     onSubmit: async data=>{
       data.nom = data.nom.trim(); data.prenom = data.prenom.trim(); data.crewId = data.crewId || null;
+      if(admin){ data.navHidden = navMode.value==='fixe' ? [...navSet] : null; delete data.menuMode; }
       // champs désactivés (non envoyés) : on garde ceux du profil
       if(!admin) ['role','email','actif','vessel','type'].forEach(k=>{ data[k] = u[k] ?? ''; });
       data.email = String(data.email||'').trim();
@@ -8028,9 +8299,9 @@ function consoPeriodSelect(){
 }
 function viewConsommations(slot){
   slot.innerHTML = '';
-  const bilan = state._consoView==='bilan';
+  const bilan = state._consoView==='bilan' && canSeeCosts();
   slot.appendChild(el('div',{class:'segmented', role:'group', 'aria-label':'Présentation', style:'margin-bottom:12px;'},
-    ...[['navire','Par navire'],['bilan','Bilan compagnie']].map(([k,l])=>el('button',{type:'button', class:'seg'+((bilan ? 'bilan' : 'navire')===k ? ' active' : ''), 'aria-pressed':String((bilan ? 'bilan' : 'navire')===k), 'data-fk':'conso-vue-'+k,
+    ...[['navire','Par navire'],['bilan','Bilan compagnie']].filter(([k])=>k!=='bilan' || canSeeCosts()).map(([k,l])=>el('button',{type:'button', class:'seg'+((bilan ? 'bilan' : 'navire')===k ? ' active' : ''), 'aria-pressed':String((bilan ? 'bilan' : 'navire')===k), 'data-fk':'conso-vue-'+k,
       onclick:()=>{ state._consoView = k; renderContent(); }}, l))));
   if(bilan) return viewConsoBilan(slot);
   slot.appendChild(vesselTabs());
@@ -8483,6 +8754,7 @@ function viewNotifications(slot){
       el('div',{}, el('div',{class:'lbl'}, n.title), el('div',{class:'desc'}, [n.at ? fmtDateTime(n.at) : '', n.by, n.text].filter(Boolean).join(' · '))),
       el('div',{style:'display:flex;gap:6px;'},
         n.ref && n.ref.kind==='nc' && state.nonconformities.some(x=>x.id===n.ref.id) ? el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>{ markNotificationRead(n); openNcModal(state.nonconformities.find(x=>x.id===n.ref.id)); }}, 'Ouvrir') : null,
+        n.ref && n.ref.kind==='conflicts' ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'voir-conflits-'+n.id, onclick:()=>{ markNotificationRead(n); openConflictLogModal(n); renderContent(); }}, 'Voir les conflits') : null,
         unread ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'notif-lu-'+n.id, onclick:()=>{ markNotificationRead(n); renderContent(); }}, 'Marquer comme lu') : null)));
   });
   slot.appendChild(card);
@@ -8576,18 +8848,74 @@ function openCrewDocModal(d, prefill){
 const WORK_STATUSES = ['À faire','En cours','Fait'];
 const INVOICE_STATUSES = ['À recevoir','Reçue','Validée','Payée'];
 function peopleOptions(){ return [...new Set([...state.users.map(profileFullName), ...state.crew.map(crewFullName)])].sort((a,b)=>a.localeCompare(b,'fr')).map(n=>({v:n,l:n})); }
-function openWorkDetailModal(w, done){
+/* jobs qui ressemblent à un travail : mots en commun dans l'intitulé, même élément ou même catégorie */
+function similarJobs(vessel, text, link){
+  const words = new Set(normText(text||'').split(/[^a-z0-9]+/).filter(x=>x.length>=3));
+  const cat = r=>r.equipCat || (state.equipment.find(e=>e.id===r.equipmentId)||{}).categorie || '';
+  const linkCat = link ? (link.equipCat || (state.equipment.find(e=>e.id===link.equipmentId)||{}).categorie || '') : '';
+  const score = (title, r)=>{
+    let s = normText(title||'').split(/[^a-z0-9]+/).filter(x=>words.has(x)).length*2;
+    if(link && link.equipmentId && r.equipmentId===link.equipmentId) s += 3;
+    else if(linkCat && cat(r)===linkCat) s += 1;
+    return s;
+  };
+  return [...state.tasks.filter(t=>t.vessel===vessel).map(t=>({kind:'task', rec:t, title:t.task, sub:'Job récurrent · '+taskDueText(t), score:score(t.task, t)})),
+          ...state.jobs.filter(j=>j.vessel===vessel && j.statut!=='Terminé').map(j=>({kind:'job', rec:j, title:j.titre, sub:'Job ponctuel · '+jobStatusLabel(j.statut), score:score(j.titre, j)}))]
+    .filter(x=>x.score>0).sort((a,b)=>b.score-a.score || a.title.localeCompare(b.title,'fr')).slice(0, 6);
+}
+function openWorkDetailModal(w, done, vessel){
+  vessel = vessel || state.activeVessel;
   const docsEl = attachmentsEditor(w.attachments, {label:'Documents et photos du travail'});
   const closeEl = attachmentsEditor(w.photosCloture, {label:'Photos de clôture'});
+  // job lié : jobs ressemblants proposés, ou création guidée d'un job récurrent ou ponctuel
+  const current = w.taskId ? 'task:'+w.taskId : w.jobId ? 'job:'+w.jobId : '';
+  const sims = similarJobs(vessel, w.libelle, w);
+  const linkedRec = w.taskId ? state.tasks.find(t=>t.id===w.taskId) : w.jobId ? state.jobs.find(j=>j.id===w.jobId) : null;
+  const linkOpts = [{v:'', l:'— Aucun job lié —'},
+    ...(linkedRec && !sims.some(x=>x.rec.id===linkedRec.id) ? [{v:current, l:'Lié : '+(linkedRec.task||linkedRec.titre)}] : []),
+    ...sims.map(x=>({v:x.kind+':'+x.rec.id, l:(x.kind==='task' ? 'Récurrent' : 'Ponctuel')+' : '+x.title+' ('+x.sub.split(' · ')[1]+')'})),
+    ...state.tasks.filter(t=>t.vessel===vessel && !sims.some(x=>x.rec.id===t.id) && t.id!==w.taskId).map(t=>({v:'task:'+t.id, l:'Récurrent : '+t.task})),
+    ...state.jobs.filter(j=>j.vessel===vessel && j.statut!=='Terminé' && !sims.some(x=>x.rec.id===j.id) && j.id!==w.jobId).map(j=>({v:'job:'+j.id, l:'Ponctuel : '+j.titre})),
+    {v:'new-task', l:'＋ Créer un job récurrent pour ce travail'}, {v:'new-job', l:'＋ Créer un job ponctuel pour ce travail'}];
+  const newBox = el('div',{class:'record-history', 'data-fk':'nouveau-job-travail', style:'display:none;'},
+    el('div',{class:'rh-title'}, 'Nouveau job'),
+    el('div',{class:'hint', style:'margin:0 0 6px;'}, 'Le job sera créé sur '+vesselName(vessel)+', relié à cet arrêt technique et à l’élément choisi ci-dessus.'),
+    field('Intitulé du job','nouveauTitre','text', null, w.libelle||''),
+    el('div',{'data-fk':'nouveau-cycle'}, field('Cycle (jours)','nouveauCycle','number', null, '', 'pour un job récurrent : ex. 365 pour un carénage annuel')),
+    field('Échéance','nouvelleEcheance','date', null, ''));
   const body = el('div',{},
+    sims.length && !current ? el('div',{class:'banner', role:'status', 'data-fk':'jobs-ressemblants'}, 'Jobs qui ressemblent à ce travail : '+sims.slice(0, 3).map(x=>'« '+x.title+' »').join(', ')+'. Choisissez-en un dans « Job lié » plutôt que d’en créer un nouveau.') : null,
+    field('Catégorie ou élément concerné','equipmentId','select', equipmentLinkOptions(vessel), linkValue(w)),
+    field('Job lié','lien','select', linkOpts, current, 'reconnaissance : les jobs ressemblants sont proposés en premier'),
+    newBox,
     field('Description','description','textarea', null, w.description||''),
     fieldRow(field('Responsable','responsable','select', [{v:'',l:'—'}, ...peopleOptions(), ...(w.responsable && !peopleOptions().some(o=>o.v===w.responsable) ? [{v:w.responsable,l:w.responsable}] : [])], w.responsable||''),
       field('État','statut','select', WORK_STATUSES.map(s=>({v:s,l:s})), w.statut||'À faire')),
     fieldRow(field('Clôturé par','cloturePar','text', null, w.cloturePar||''), field('Clôturé le','dateCloture','date', null, w.dateCloture||'')),
     field('Notes','notes','textarea', null, w.notes||''), docsEl, closeEl);
+  const lienSel = $('[name=lien]', body);
+  const showNew = ()=>{ const v = lienSel.value; newBox.style.display = v.startsWith('new-') ? '' : 'none'; $('[data-fk=nouveau-cycle]', body).style.display = v==='new-task' ? '' : 'none'; };
+  lienSel.addEventListener('change', showNew); showNew();
   openModal({title:'Travail — '+(w.libelle||''), body, wide:true, readOnly:!canEdit(), submitLabel:'Valider',
+    validate: d=>d.lien==='new-task' && !(Number(d.nouveauCycle)>0) ? 'Indiquez le cycle du job récurrent (en jours).' : d.lien.startsWith('new-') && !d.nouveauTitre.trim() ? 'Donnez un intitulé au job.' : null,
     onSubmit: async d=>{
-      Object.assign(w, d, {attachments:docsEl._getList(), photosCloture:closeEl._getList()});
+      const link = applyEquipLink({equipmentId:d.equipmentId});
+      const {lien, nouveauTitre, nouveauCycle, nouvelleEcheance} = d;
+      ['lien','nouveauTitre','nouveauCycle','nouvelleEcheance','equipmentId'].forEach(k=>delete d[k]);
+      const common = {vessel, equipmentId:link.equipmentId, equipCat:link.equipCat};
+      if(lien==='new-task'){
+        const id = addDoc('tasks','tasks', {...common, category:ENTRETIEN_CATS[0], task:nouveauTitre.trim(), unit:'date', cycleDays:Number(nouveauCycle), periodicity:'',
+          nextDate:nouvelleEcheance||null, lastDate:null, observations:'Créé depuis un arrêt technique', completions:[], pieces:[]});
+        logHistory('tasks', id, nouveauTitre.trim(), 'créée (arrêt technique)', vessel);
+        w.taskId = id; w.jobId = null;
+      }else if(lien==='new-job'){
+        const id = addDoc('jobs','jobs', {...common, titre:nouveauTitre.trim(), nature:'Autre', statut:'À faire', priorite:'Normale', dateEcheance:nouvelleEcheance||'', description:w.description||'', attachments:[]});
+        logHistory('jobs', id, nouveauTitre.trim(), 'créé (arrêt technique)', vessel);
+        w.jobId = id; w.taskId = null;
+      }else if(lien.startsWith('task:')){ w.taskId = lien.slice(5); w.jobId = null; }
+      else if(lien.startsWith('job:')){ w.jobId = lien.slice(4); w.taskId = null; }
+      else{ w.taskId = null; w.jobId = null; }
+      Object.assign(w, d, {equipmentId:link.equipmentId, equipCat:link.equipCat, attachments:docsEl._getList(), photosCloture:closeEl._getList()});
       if(w.statut==='Fait'){ w.cloturePar = w.cloturePar || state.me.name || ''; w.dateCloture = w.dateCloture || todayISO(); }
       done();
     }});
@@ -9708,6 +10036,7 @@ function viewBord(slot){
       el('span',{class:'bm-last'}, last ? fmtDate(last.date) : 'aucun relevé')));
   });
   slot.appendChild(bordSection('Relever un compteur', meters));
+  slot.appendChild(bordSection('Mes compteurs', myGaugesSection(v)));
 
   // défauts / jobs ponctuels ouverts
   const open = state.jobs.filter(j=>j.vessel===v && j.statut!=='Terminé')
@@ -10562,12 +10891,15 @@ function viewPlanningDaily(slot, p){
   const vesSel = el('select',{class:'select', 'aria-label':'Filtrer par navire', 'data-fk':'pj-navire', onchange:e=>{ p.vessel = e.target.value; renderContent(); }},
     el('option',{value:''},'Tous navires'), ...VESSELS.map(v=>el('option',{value:v.key}, v.name)));
   vesSel.value = p.vessel || '';
+  const sortSel = el('select',{class:'select', 'aria-label':'Trier les marins', 'data-fk':'pj-tri', onchange:e=>{ p.sort = e.target.value; renderContent(); }},
+    ...[['nom','Tri : nom'],['prenom','Tri : prénom'],['fonction','Tri : fonction (capitaine, matelot…)'],['bord','Tri : jours à bord sur la période']].map(([v,l])=>el('option',{value:v}, l)));
+  sortSel.value = p.sort || 'nom';
   slot.appendChild(el('div',{class:'toolbar'},
     el('button',{class:'btn btn-ghost btn-sm', type:'button', 'aria-label':'Période précédente', 'data-fk':'pj-prec', onclick:()=>shift(-1)}, '←'),
     el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>{ p.dstart = today; renderContent(); }}, 'Aujourd’hui'),
     el('button',{class:'btn btn-ghost btn-sm', type:'button', 'aria-label':'Période suivante', 'data-fk':'pj-suiv', onclick:()=>shift(1)}, '→'),
     el('div',{class:'section-sub', style:'font-weight:600;'}, span==='mois' ? MONTHS_FR[Number(start.slice(5,7))-1]+' '+start.slice(0,4) : 'Semaine '+isoWeek(start)+(n>7 ? '–'+isoWeek(days[n-1]) : '')+' · du '+fmtDate(start)+' au '+fmtDate(days[n-1])),
-    spanSel, crewSel, vesSel, el('div',{style:'flex:1;'}),
+    spanSel, crewSel, vesSel, sortSel, el('div',{style:'flex:1;'}),
     el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'pj-pdf', onclick:()=>printSheet(buildPlanningSheet(days, p))}, el('span',{html:iconPrinter()}), 'Imprimer / PDF'),
     el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'pj-agenda', onclick:()=>openPlanningCalendarExport(p)}, 'Exporter vers un agenda…'),
     canEdit() ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'pj-import', onclick:pickPlanningFile}, 'Importer Excel…') : null,
@@ -10591,7 +10923,10 @@ function viewPlanningDaily(slot, p){
   if(p.crew) crew = crew.filter(m=>m.id===p.crew);
   const vessels = p.vessel ? [p.vessel] : VESSELS.map(v=>v.key);
   if(p.vessel) crew = crew.filter(m=>days.some(d=>planVesselOf(crewPlanAt(m.id, d))===p.vessel));
-  crew.sort((a,b)=>crewFullName(a).localeCompare(crewFullName(b),'fr'));
+  const byName = (a,b)=>crewFullName(a).localeCompare(crewFullName(b),'fr');
+  const aboard = m=>days.filter(d=>planVesselOf(crewPlanAt(m.id, d))).length;
+  const sorts = {nom:byName, prenom:(a,b)=>(a.prenom||'').localeCompare(b.prenom||'','fr') || byName(a,b), fonction:(a,b)=>posteRank(a.poste)-posteRank(b.poste) || (a.poste||'').localeCompare(b.poste||'','fr') || byName(a,b), bord:(a,b)=>aboard(b)-aboard(a) || byName(a,b)};
+  crew.sort(sorts[p.sort] || byName);
   const head = el('tr',{}, el('th',{class:'pj-name'}, p.vessel ? 'Marins à bord du '+vesselName(p.vessel) : 'Marin'),
     ...days.map(d=>{ const wd = new Date(d+'T12:00:00').getDay();
       return el('th',{class:'pj-day'+(wd===0||wd===6 ? ' pj-we' : '')+(d===today ? ' pj-today' : '')+(holidayName(d) ? ' pj-we' : ''), title:holidayName(d)||''},
@@ -11207,6 +11542,34 @@ function crewAboard(vessel, iso){
   return state.crewAssignments.filter(a=>a.vessel===vessel && a.debut<=iso && assignmentEnd(a)>=iso);
 }
 
+/* « Mon planning » : le planning journalier de la personne connectée (fiche marin reliée à son profil) */
+function viewMyPlanning(slot){
+  slot.innerHTML = '';
+  const id = myCrewId(), m = crewMember(id);
+  if(!m){ slot.appendChild(el('div',{class:'card empty'}, el('h3',{}, 'Profil non relié à une fiche marin'), 'Demandez à l’administrateur de relier votre profil à votre fiche (Équipage › Marins) pour voir votre planning ici.')); return; }
+  const f = state._myPlan = state._myPlan || {start:mondayOf(todayISO()), weeks:4};
+  const days = Array.from({length:f.weeks*7}, (_,i)=>addDays(f.start, i)), today = todayISO();
+  slot.appendChild(el('div',{class:'toolbar'},
+    el('button',{class:'btn btn-ghost btn-sm', type:'button', 'aria-label':'Semaines précédentes', onclick:()=>{ f.start = addDays(f.start, -7*f.weeks); renderContent(); }}, '←'),
+    el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>{ f.start = mondayOf(today); renderContent(); }}, 'Aujourd’hui'),
+    el('button',{class:'btn btn-ghost btn-sm', type:'button', 'aria-label':'Semaines suivantes', onclick:()=>{ f.start = addDays(f.start, 7*f.weeks); renderContent(); }}, '→'),
+    el('div',{class:'section-sub', style:'font-weight:600;'}, crewFullName(m)+(m.poste ? ' · '+m.poste : '')+' — du '+fmtDate(days[0])+' au '+fmtDate(days[days.length-1]))));
+  const tb = el('tbody',{});
+  days.forEach(d=>{
+    const r = crewPlanAt(m.id, d), def = r && crewPlanCode(r.code), v = planVesselOf(r), vp = v ? vesselPlanAt(v, d) : null;
+    const wd = new Date(d+'T12:00:00').getDay();
+    tb.appendChild(el('tr',{class:(d===today ? 'mp-today ' : '')+(wd===0||wd===6 ? 'wh-weekend' : ''), 'data-fk':'mp-'+d},
+      el('td',{style:'white-space:nowrap;font-weight:'+(d===today ? '700' : '400')+';'}, WEEKDAYS_FR[wd]+' '+fmtDate(d)),
+      el('td',{}, r && r.code ? el('span',{class:'pj-chip', style:'--c:'+crewPlanColor(r.code)}, r.code) : '—'),
+      el('td',{}, def ? def.l : r && r.note ? '' : '—', r && r.note ? el('div',{class:'hint', style:'margin:0;'}, r.note) : null),
+      el('td',{}, vp ? [vp.position, planTrips(vp).map(t=>(t.from||'')+(t.depart ? ' '+t.depart : '')+' → '+(t.to||'')+(t.arrivee ? ' '+t.arrivee : '')).join(' ; ')].filter(Boolean).join(' · ') : '')));
+  });
+  slot.appendChild(el('div',{class:'card', style:'padding:16px 18px;'}, el('div',{class:'table-wrap'}, el('table',{'data-fk':'mon-planning'},
+    el('thead',{}, el('tr',{}, ...['Jour','Code','Activité','Navire : position et trajets'].map(h=>el('th',{}, h)))), tb))));
+}
+/* ordre des fonctions pour le tri du planning */
+const POSTE_RANKS = [['capitaine',0],['patron',0],['second',1],['chef',2],['mecanicien',3],['matelot',4],['mousse',5]];
+function posteRank(p){ const n = normText(p||''); const hit = POSTE_RANKS.find(([k])=>n.includes(k)); return hit ? hit[1] : 9; }
 function viewPlanning(slot){
   slot.innerHTML = '';
   const p = state._plan = state._plan || {start: mondayOf(addDays(todayISO(), -7)), weeks: 8, vessel:''};
@@ -11448,11 +11811,11 @@ function viewArrets(slot){
         el('span',{class:'badge '+(DRYDOCK_STATUS_CLASS[d.statut]||'inconnu')}, phase==='encours' && d.statut==='Planifié' ? 'En cours' : (d.statut||'Planifié'))),
       el('div',{class:'dock-dates'}, fmtDate(d.debut)+' → '+fmtDate(d.fin)+(d.debut && d.fin ? ' · '+(diffDays(d.debut, d.fin)+1)+' j' : '')
         +(phase==='avenir' && d.debut ? ' · dans '+diffDays(todayISO(), d.debut)+' j' : '')),
-      el('div',{class:'dock-meter'}, el('span',{}, 'Travaux'), el('div',{class:'dock-bar', role:'img', 'aria-label':tt.faits+' travaux faits sur '+tt.total}, el('i',{style:'width:'+pctDone+'%'})), el('b',{}, tt.faits+' / '+tt.total)),
+      el('div',{class:'dock-meter'}, el('span',{}, 'Travaux'), el('div',{class:'dock-bar cost-only', role:'img', 'aria-label':tt.faits+' travaux faits sur '+tt.total}, el('i',{style:'width:'+pctDone+'%'})), el('b',{}, tt.faits+' / '+tt.total)),
       el('div',{class:'dock-meter'+(tt.over ? ' over' : '')}, el('span',{}, 'Coût'),
-        el('div',{class:'dock-bar', role:'img', 'aria-label':'Coût '+fmtEuros(tt.cout)+(tt.budget ? ' pour un budget de '+fmtEuros(tt.budget) : '')}, el('i',{style:'width:'+(tt.budget ? pctCost : 0)+'%'})),
-        el('b',{}, fmtEuros(tt.cout)+(tt.budget ? ' / '+fmtEuros(tt.budget) : ''))),
-      tt.over ? el('div',{class:'dock-alert'}, 'Budget dépassé de '+fmtEuros(tt.cout-tt.budget)) : null,
+        el('div',{class:'dock-bar cost-only', role:'img', 'aria-label':'Coût '+fmtEuros(tt.cout)+(tt.budget ? ' pour un budget de '+fmtEuros(tt.budget) : '')}, el('i',{style:'width:'+(tt.budget ? pctCost : 0)+'%'})),
+        el('b',{class:'cost-only'}, fmtEuros(tt.cout)+(tt.budget ? ' / '+fmtEuros(tt.budget) : ''))),
+      tt.over ? el('div',{class:'dock-alert cost-only'}, 'Budget dépassé de '+fmtEuros(tt.cout-tt.budget)) : null,
       (()=>{ const prov = drydockByProvider(d).filter(x=>x.nom!=='Sans prestataire');
         return prov.length ? el('div',{class:'dock-providers'}, ...prov.map(x=>el('span',{class:'dock-prov'+(x.faits===x.total ? ' done' : '')}, x.nom+' '+x.faits+'/'+x.total))) : null; })()));
   });
@@ -11487,7 +11850,7 @@ function openDrydockModal(d, prefill){
   const bodyRef = {};
   function refreshTotals(){
     const tt = drydockTotals({travaux:works, budget:bodyRef.budget ? bodyRef.budget.value : base.budget});
-    totalsBox.textContent = tt.faits+' fait(s) sur '+tt.total+' · coût total '+fmtEuros(tt.cout)+(tt.budget ? ' pour un budget de '+fmtEuros(tt.budget)+(tt.over ? ' — budget dépassé de '+fmtEuros(tt.cout-tt.budget) : '') : '');
+    totalsBox.textContent = !canSeeCosts() ? tt.faits+' fait(s) sur '+tt.total : tt.faits+' fait(s) sur '+tt.total+' · coût total '+fmtEuros(tt.cout)+(tt.budget ? ' pour un budget de '+fmtEuros(tt.budget)+(tt.over ? ' — budget dépassé de '+fmtEuros(tt.cout-tt.budget) : '') : '');
     totalsBox.style.color = tt.over ? 'var(--danger-text)' : '';
   }
   function drawWorks(){
@@ -11496,7 +11859,7 @@ function openDrydockModal(d, prefill){
     if(prov.length) worksBox.appendChild(el('div',{class:'dock-providers', style:'margin-bottom:8px;'}, ...prov.map(x=>el('span',{class:'dock-prov'+(x.faits===x.total ? ' done' : '')}, x.nom+' : '+x.faits+'/'+x.total+' terminée(s)'))));
     if(!works.length) worksBox.appendChild(el('div',{class:'hint'}, 'Aucun travail pour l’instant.'));
     else worksBox.appendChild(el('div',{class:'table-wrap'}, el('table',{class:'compact-table'},
-      el('thead',{}, el('tr',{}, ...['Fait','Travail','Prestataire','Coût (€)',''].map(h=>el('th',{}, h)))),
+      el('thead',{}, el('tr',{}, ...['Fait','Travail','Prestataire','Coût (€)',''].map(h=>el('th',{class:h==='Coût (€)' ? 'cost-only' : null}, h)))),
       el('tbody',{}, ...works.map(w=>{
         const linked = w.taskId ? state.tasks.find(t=>t.id===w.taskId) : w.jobId ? state.jobs.find(j=>j.id===w.jobId) : null;
         return el('tr',{},
@@ -11506,11 +11869,15 @@ function openDrydockModal(d, prefill){
             w.date || w.notes ? el('div',{class:'hint', style:'margin:2px 0 0;'}, [w.date ? (/^\d{4}-/.test(w.date) ? fmtDate(w.date) : w.date) : '', w.notes].filter(Boolean).join(' · ')) : null,
             linked ? el('div',{class:'hint', style:'margin:2px 0 0;'}, (w.taskId ? 'Job récurrent' : 'Job ponctuel')+' · ',
               el('button',{type:'button', class:'link-btn', onclick:()=>w.taskId ? openTaskModal(linked) : openJobModal(linked)}, 'Ouvrir')) : null,
+            !linked && w.libelle && canEdit() ? (()=>{ const s = similarJobs(bodyRef.vessel ? bodyRef.vessel.value : base.vessel, w.libelle, w)[0];
+              return s ? el('div',{class:'hint', style:'margin:2px 0 0;', 'data-fk':'suggestion-'+w.id}, 'Ressemble à « '+s.title+' » ('+(s.kind==='task' ? 'récurrent' : 'ponctuel')+') · ',
+                el('button',{type:'button', class:'link-btn', 'data-fk':'lier-suggestion-'+w.id, onclick:()=>{ if(s.kind==='task') w.taskId = s.rec.id; else w.jobId = s.rec.id; if(!w.equipmentId && !w.equipCat){ w.equipmentId = s.rec.equipmentId||null; w.equipCat = s.rec.equipCat||null; } drawWorks(); }}, 'Lier')) : null; })() : null,
+            w.equipmentId || w.equipCat ? el('div',{class:'hint', style:'margin:2px 0 0;'}, el('span',{class:'link-tag'}, equipLabel(w))) : null,
             w.responsable || w.statut==='En cours' || w.cloturePar || (w.attachments||[]).length || (w.photosCloture||[]).length || factures.some(x=>(x.travauxIds||[]).includes(w.id)) ? el('div',{class:'hint', style:'margin:2px 0 0;'}, [w.statut==='En cours' ? 'En cours' : '', w.responsable ? 'resp. '+w.responsable : '', w.cloturePar ? 'clôturé par '+w.cloturePar : '', (w.attachments||[]).length ? (w.attachments.length+' doc.') : '', (w.photosCloture||[]).length ? (w.photosCloture.length+' photo(s) de clôture') : '', ...factures.filter(x=>(x.travauxIds||[]).includes(w.id)).map(x=>'facture '+(x.numero||x.prestataire))].filter(Boolean).join(' · ')) : null),
           el('td',{}, el('input',{type:'text', class:'select', 'aria-label':'Prestataire', 'data-w':'prestataire', value:w.prestataire||'', readonly: canEdit() ? null : '', oninput:e=>{ w.prestataire = e.target.value; }})),
-          el('td',{}, el('input',{type:'number', inputmode:'decimal', min:'0', step:'any', class:'select', style:'width:110px;', 'aria-label':'Coût en euros', 'data-w':'cout', value:w.cout ?? '', readonly: canEdit() ? null : '',
+          el('td',{class:'cost-only'}, el('input',{type:'number', inputmode:'decimal', min:'0', step:'any', class:'select', style:'width:110px;', 'aria-label':'Coût en euros', 'data-w':'cout', value:w.cout ?? '', readonly: canEdit() ? null : '',
             oninput:e=>{ w.cout = e.target.value; refreshTotals(); }})),
-          el('td',{style:'white-space:nowrap;'}, el('button',{type:'button', class:'btn btn-ghost btn-sm', 'data-fk':'detail-travail-'+w.id, onclick:()=>openWorkDetailModal(w, ()=>drawWorks())}, 'Détails'), ' ', canEdit() ? el('button',{type:'button', class:'btn-danger-text', 'aria-label':'Retirer « '+w.libelle+' »', onclick:()=>{
+          el('td',{style:'white-space:nowrap;'}, el('button',{type:'button', class:'btn btn-ghost btn-sm', 'data-fk':'detail-travail-'+w.id, onclick:()=>openWorkDetailModal(w, ()=>drawWorks(), bodyRef.vessel ? bodyRef.vessel.value : base.vessel)}, 'Détails'), ' ', canEdit() ? el('button',{type:'button', class:'btn-danger-text', 'aria-label':'Retirer « '+w.libelle+' »', onclick:()=>{
             confirmModal('Retirer « '+(w.libelle||'ce travail')+' » de la liste des travaux ? (Le job lié, s’il y en a un, n’est pas supprimé.)', ()=>{ works = works.filter(x=>x!==w); drawWorks(); });
           }}, 'Retirer') : null));
       })))));
@@ -11533,9 +11900,9 @@ function openDrydockModal(d, prefill){
     fieldRow(field('Chantier / lieu','lieu','text', null, base.lieu||''),
       field('Statut','statut','select', DRYDOCK_STATUSES.map(s=>({v:s,l:s})), base.statut||'Planifié')),
     fieldRow(field('Début','debut','date', null, base.debut||''), field('Fin','fin','date', null, base.fin||'')),
-    field('Budget (€)','budget','number', null, base.budget ?? ''),
+    el('div',{class:'cost-only'}, field('Budget (€)','budget','number', null, base.budget ?? '')),
     el('div',{class:'record-history', style:'margin-bottom:14px;'}, el('div',{class:'rh-title'}, 'Travaux'), worksBox, totalsBox),
-    el('div',{class:'record-history', style:'margin-bottom:14px;'}, el('div',{class:'rh-title'}, 'Factures par prestataire'), invoicesBox),
+    el('div',{class:'record-history cost-only', style:'margin-bottom:14px;'}, el('div',{class:'rh-title'}, 'Factures par prestataire'), invoicesBox),
     field('Notes','notes','textarea', null, base.notes||''),
     attachEl,
     isEdit ? recordHistorySection(d) : null);
@@ -11634,14 +12001,28 @@ function periodMinutes(p){
 }
 function workRecord(key, date){ return state.workHours.find(w=>w.personKey===key && w.date===date) || null; }
 function dayWorkMinutes(rec){ return rec ? (rec.periods||[]).reduce((s,p)=>s+periodMinutes(p), 0) : 0; }
-function ticketRules(){ const s = setting('workHoursRules'); return {minHours: s && s.ticketMinHours!=null && s.ticketMinHours!=='' ? Number(s.ticketMinHours) : 0}; }
-/* ticket restaurant : choix enregistré, sinon 1 par jour travaillé (au moins le seuil réglé) */
+/* ticket restaurant : plus de 5 h de travail dans la journée (seuil réglable) ; un choix forcé
+   (oui / non) n'est possible que pour l'administrateur et le service technique */
+const TICKET_DEFAULT_HOURS = 5;
+function ticketRules(){ const s = setting('workHoursRules'); return {minHours: s && s.ticketMinHours!=null && s.ticketMinHours!=='' ? Number(s.ticketMinHours) : TICKET_DEFAULT_HOURS}; }
 function dayTickets(rec){
   if(!rec) return 0;
   if(rec.absence && !dayWorkMinutes(rec)) return 0;
   if(rec.ticket===0 || rec.ticket===1) return rec.ticket;
   const min = dayWorkMinutes(rec);
-  return min>0 && min >= ticketRules().minHours*60 ? 1 : 0;
+  return min>0 && min > ticketRules().minHours*60 ? 1 : 0;
+}
+const canSetTicket = ()=>uiWritable() && ['admin','technique'].includes(currentRole());
+/* heures au quart d'heure : 00, 15, 30, 45 seulement */
+const QUARTERS = (()=>{ const o = []; for(let m=0; m<24*60; m+=15) o.push(minToHHMM(m)); return o; })();
+function quarterSelect(value, attrs, onPick){
+  const v = value||'';
+  const s = el('select',{class:'select wh-quarter', ...attrs},
+    el('option',{value:''}, '--:--'), ...(v && !QUARTERS.includes(v) ? [el('option',{value:v}, v+' (à corriger)')] : []), ...QUARTERS.map(q=>el('option',{value:q}, q)));
+  s.value = v;
+  const fire = e=>onPick && onPick(e);
+  s.addEventListener('change', fire); s.addEventListener('input', fire);
+  return s;
 }
 /* intervalles de travail [début, fin] en minutes absolues, triés et fusionnés */
 function workIntervals(key){
@@ -11795,13 +12176,14 @@ function viewHoursMonth(slot, key, ym){
   if(tot.alertDays) slot.appendChild(el('div',{class:'banner banner-danger', role:'status'}, 'Heures de repos non respectées '+tot.alertDays+' jour(s) ce mois-ci : voir les lignes signalées (règles : 10 h de repos sur 24 h, 77 h sur 7 jours, 2 périodes de repos au plus dont une de 6 h, 14 h au plus entre deux repos).'));
   const tbody = el('tbody',{});
   const days = monthDays(ym);
-  const timeInput = (d, i, v, label)=>el('input',{type:'time', class:'select wh-time', value:v||'', 'aria-label':label+' le '+fmtDate(d), 'data-fk':'wh-'+d+'-'+i, readonly: editable ? null : '',
-    onchange:e=>{
+  const timeInput = (d, i, v, label)=>quarterSelect(v, {class:'select wh-time wh-quarter', 'aria-label':label+' le '+fmtDate(d), 'data-fk':'wh-'+d+'-'+i, disabled: editable ? null : ''},
+    e=>{
+      if(e.type!=='change') return;
       const row = e.target.closest('tr');
       const v4 = [0,1,2,3].map(j=>row.querySelector('[data-fk="wh-'+d+'-'+j+'"]').value);
       if((v4[0] && !v4[1] && !v4[3]) || (v4[2] && !v4[3])) return; // période en cours de saisie
       withUndo('Heures du '+fmtDate(d), ()=>saveWorkDay(key, d, periodsFromRow(...v4))).then(()=>renderContent());
-    }});
+    });
   days.forEach((d, i)=>{
     const rec = workRecord(key, d);
     const per = rec ? rec.periods||[] : [];
@@ -11854,9 +12236,9 @@ function openWorkDayModal(key, date){
     box.innerHTML = '';
     periods.forEach((p, i)=>box.appendChild(el('div',{class:'settings-row', style:'gap:8px;'},
       el('span',{class:'lbl', style:'min-width:80px;'}, 'Période '+(i+1)),
-      el('input',{type:'time', class:'select', 'aria-label':'Début période '+(i+1), 'data-fk':'periode-debut-'+i, value:p.debut, oninput:e=>{ p.debut = e.target.value; }}),
+      quarterSelect(p.debut, {'aria-label':'Début période '+(i+1), 'data-fk':'periode-debut-'+i, disabled:editable ? null : ''}, e=>{ p.debut = e.target.value; }),
       el('span',{}, '→'),
-      el('input',{type:'time', class:'select', 'aria-label':'Fin période '+(i+1), 'data-fk':'periode-fin-'+i, value:p.fin, oninput:e=>{ p.fin = e.target.value; }}),
+      quarterSelect(p.fin, {'aria-label':'Fin période '+(i+1), 'data-fk':'periode-fin-'+i, disabled:editable ? null : ''}, e=>{ p.fin = e.target.value; }),
       editable ? el('button',{class:'btn-danger-text', type:'button', onclick:()=>{ periods.splice(i,1); draw(); }}, 'Retirer') : null)));
     if(editable) box.appendChild(el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'ajouter-periode', onclick:()=>{ periods.push({debut:'', fin:''}); draw(); }}, el('span',{html:iconPlus()}), 'Ajouter une période'));
   }
@@ -11865,8 +12247,9 @@ function openWorkDayModal(key, date){
   const body = el('div',{},
     el('div',{class:'hint', style:'margin-bottom:8px;'}, 'Une fin antérieure au début (ex. 22:00 → 02:00) se termine le lendemain.'),
     box,
-    field('Ticket restaurant','ticket','select', [{v:'',l:'Automatique ('+(auto.minHours ? 'jour d’au moins '+auto.minHours+' h' : '1 par jour travaillé')+')'},{v:'1',l:'Oui'},{v:'0',l:'Non (repas fourni, absence…)'}],
-      rec && (rec.ticket===0 || rec.ticket===1) ? String(rec.ticket) : ''),
+    canSetTicket() ? field('Ticket restaurant','ticket','select', [{v:'',l:'Automatique (plus de '+auto.minHours+' h de travail)'},{v:'1',l:'Oui'},{v:'0',l:'Non (repas fourni, absence…)'}],
+      rec && (rec.ticket===0 || rec.ticket===1) ? String(rec.ticket) : '')
+      : el('div',{class:'hint', 'data-fk':'ticket-auto'}, 'Ticket restaurant : automatique au-delà de '+auto.minHours+' h de travail dans la journée'+(rec && (rec.ticket===0 || rec.ticket===1) ? ' (fixé à « '+(rec.ticket ? 'oui' : 'non')+' » par l’administrateur)' : '')+'.'),
     field('Absence','absence','select', [{v:'',l:'— aucune —'}, ...ABSENCE_TYPES.map(a=>({v:a, l:a}))], rec ? rec.absence||'' : '', 'congé, maladie, récupération…'),
     field('Note','notes','text', null, rec ? rec.notes||'' : '', 'ex. escale, quart de nuit, formation'),
     currentRole()==='admin' ? fieldRow(field('Frais (€)','frais','number', null, rec ? rec.frais ?? '' : '', 'visible par l’administrateur seulement'), field('Commentaire des frais','fraisNote','text', null, rec ? rec.fraisNote||'' : '')) : null,
@@ -11875,12 +12258,13 @@ function openWorkDayModal(key, date){
     validate: ()=>{
       const bad = periods.find(p=>(p.debut && !p.fin) || (!p.debut && p.fin));
       if(bad) return 'Chaque période doit avoir un début et une fin.';
+      if(periods.some(p=>[p.debut, p.fin].some(x=>x && !QUARTERS.includes(x)))) return 'Les heures se saisissent au quart d’heure (h00, h15, h30, h45).';
       const total = periods.reduce((s,p)=>s+periodMinutes(p), 0);
       if(total > 24*60) return 'Plus de 24 h de travail sur la journée : vérifiez les heures.';
       return null;
     },
     onSubmit: async data=>{
-      saveWorkDay(key, date, periods, {ticket: data.ticket==='' ? null : Number(data.ticket), notes:data.notes.trim(), absence:data.absence||'',
+      saveWorkDay(key, date, periods, {...(canSetTicket() ? {ticket: data.ticket==='' ? null : Number(data.ticket)} : {}), notes:data.notes.trim(), absence:data.absence||'',
         ...(currentRole()==='admin' ? {frais:data.frais==='' ? '' : Number(data.frais), fraisNote:data.fraisNote.trim()} : {})});
       toast('Heures enregistrées', 'success');
     }});
@@ -11913,7 +12297,7 @@ function exportHoursCSV(ym){
 }
 function openTicketRulesModal(){
   const body = el('div',{},
-    field('Ticket restaurant à partir de (heures travaillées dans la journée)','ticketMinHours','number', null, ticketRules().minHours || '', 'vide ou 0 : un ticket par jour travaillé, comme le relevé Excel'),
+    field('Ticket restaurant au-delà de (heures travaillées dans la journée)','ticketMinHours','number', null, ticketRules().minHours, 'vide : '+TICKET_DEFAULT_HOURS+' h par défaut ; 0 : un ticket par jour travaillé'),
     el('div',{class:'hint'}, 'Le ticket se décoche jour par jour (repas fourni à bord, absence…).'));
   openModal({title:'Tickets restaurant', body, readOnly: !canConfigure(),
     validate: d=>d.ticketMinHours!=='' && !(Number(d.ticketMinHours)>=0 && Number(d.ticketMinHours)<=24) ? 'Valeur entre 0 et 24 h.' : null,
@@ -12218,15 +12602,39 @@ const HISTORY_TYPES = [
   ['crewDocs','Document de marin'], ['users','Profil'], ['settings','Réglage'], ['workHours','Heures de travail'], ['crewPlan','Planning journalier'], ['vesselPlan','Organisation des navires'], ['undo','Annulation'], ['backup','Archive']
 ];
 function historyTypeLabel(t){ const f = HISTORY_TYPES.find(x=>x[0]===t); return f?f[1]:t; }
+/* détail d'une ligne de l'historique : la modification complète, les autres actions sur la même fiche,
+   et des raccourcis vers la fiche ou la page concernée */
+const HISTORY_ROUTES = {fuel:'#/carburant', crewDocs:'#/certificats-equipage', workHours:'#/heures', crewPlan:'#/planning', vesselPlan:'#/planning', crewAssignments:'#/planning',
+  settings:'#/parametres', meters:'#/entretien', notifications:'#/notifications'};
+function openHistoryEntryModal(h){
+  const src = SEARCH_SOURCES.find(s=>s.key===h.entityType);
+  const rec = src && h.entityId ? (state[src.key]||[]).find(x=>x.id===h.entityId) : null;
+  const route = (src && src.route) || HISTORY_ROUTES[h.entityType] || '';
+  const others = h.entityId ? state.history.filter(x=>x.entityId===h.entityId && x.id!==h.id).sort((a,b)=>(b.at||'').localeCompare(a.at||'')).slice(0, 12) : [];
+  const go = ()=>{ closeAllModalsQuiet(); if(h.vessel && VESSELS.some(v=>v.key===h.vessel)){ state.activeVessel = h.vessel; prefStore.setItem('sw_active_vessel', h.vessel); } if(h.entityType==='jobs') state._entSubview = 'jobs'; if(h.entityType==='tasks') state._entSubview = ''; location.hash = route; };
+  openModal({title:h.label||'Action', infoOnly:true, wide:true, body:el('div',{'data-fk':'hist-detail'},
+    el('div',{class:'settings-row'}, el('div',{}, el('div',{class:'lbl'}, (h.action||'')+' — '+historyTypeLabel(h.entityType)),
+      el('div',{class:'desc'}, [h.at ? fmtDateTime(h.at) : '', profileName(h.userId), h.role ? roleDef(h.role).label : '', h.vessel ? vesselName(h.vessel) : ''].filter(Boolean).join(' · ')))),
+    h.detail ? el('div',{class:'record-history'}, el('div',{class:'rh-title'}, 'Détail de la modification'), el('div',{class:'conflict-val', 'data-fk':'hist-detail-texte'}, String(h.detail).split(' · ').join('\n'))) : el('div',{class:'hint'}, 'Pas de détail enregistré pour cette action.'),
+    others.length ? el('details',{class:'record-history'}, el('summary',{}, 'Autres actions sur cette fiche ('+others.length+')'),
+      ...others.map(x=>el('div',{class:'hint', style:'margin:4px 0;'}, fmtDateTime(x.at)+' · '+(x.action||'')+' · '+profileName(x.userId)+(x.detail ? ' — '+x.detail : '')))) : null,
+    el('div',{style:'display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;'},
+      rec && src.open ? el('button',{class:'btn btn-primary btn-sm', type:'button', 'data-fk':'hist-ouvrir', onclick:()=>{ closeAllModalsQuiet(); src.open(rec); }}, 'Ouvrir la fiche') : null,
+      h.entityId && src && !rec ? el('span',{class:'hint', style:'margin:0;align-self:center;'}, 'Fiche supprimée depuis.') : null,
+      route ? el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'hist-page', onclick:go}, 'Aller à la page') : null))});
+}
 function viewHistorique(slot){
   slot.innerHTML='';
   const rows = state.history.slice().sort((a,b)=>(b.at||'').localeCompare(a.at||''));
   ensureProfiles(rows.slice(0,100).map(r=>r.userId));
 
   const search = el('div',{class:'search-box'}, el('span',{html:iconSearch()}), el('input',{type:'search', 'aria-label':'Rechercher…', 'data-fk':'recherche', placeholder:'Rechercher…', value:state._histSearch||'', oninput:e=>{state._histSearch=e.target.value.toLowerCase(); renderContent();}}));
-  const vesselSel = el('select',{class:'select', 'aria-label':'Filtrer par navire', 'data-fk':'filtre-navire', onchange:e=>{state._histVessel=e.target.value; renderContent();}},
-    el('option',{value:''},'Tous navires'), ...VESSELS.map(v=>el('option',{value:v.key}, v.name)));
-  vesselSel.value = state._histVessel||'';
+  // navires en onglets, comme dans Entretien, plus « Toute la flotte »
+  const hv = state._histVessel||'';
+  slot.appendChild(el('div',{class:'tabs', role:'tablist', 'aria-label':'Navire', 'data-fk':'hist-navires'},
+    ...[{key:'', name:'Toute la flotte'}, ...VESSELS].map(v=>el('button',{type:'button', role:'tab', 'aria-selected':String(hv===v.key), class:'tab'+(hv===v.key ? ' active' : ''), style:v.key ? '--tab-c:'+(vesselColor(v.key)||'var(--navy-500)') : null,
+      'data-fk':'hist-navire-'+(v.key||'tous'), onclick:()=>{ state._histVessel = v.key; renderContent(); }}, v.name))));
+  const vesselSel = null;
   const typeSel = el('select',{class:'select', 'aria-label':'Filtrer par type', 'data-fk':'filtre-type', onchange:e=>{state._histType=e.target.value; renderContent();}},
     el('option',{value:''},'Tous types'), ...HISTORY_TYPES.map(([k,l])=>el('option',{value:k}, l)));
   typeSel.value = state._histType||'';
@@ -12234,7 +12642,7 @@ function viewHistorique(slot){
   const whoSel = el('select',{class:'select', 'aria-label':'Filtrer par personne', 'data-fk':'filtre-qui', onchange:e=>{state._histWho=e.target.value; renderContent();}},
     el('option',{value:''},'Tout le monde'), ...people.map(n=>el('option',{value:n}, n)));
   whoSel.value = state._histWho||'';
-  slot.appendChild(el('div',{class:'toolbar'}, search, vesselSel, typeSel, whoSel,
+  slot.appendChild(el('div',{class:'toolbar'}, search, typeSel, whoSel,
     undoStack.length ? el('button',{class:'btn btn-ghost', type:'button', 'data-fk':'annuler-derniere', title:'Raccourci : Ctrl+Z', onclick:undoLast}, 'Annuler ma dernière action') : el('span',{})));
   if(undoStack.length){
     const box = el('div',{class:'card', style:'padding:14px 18px;'}, el('div',{class:'lbl', style:'font-weight:600;margin-bottom:6px;'}, 'Mes actions de cette session, annulables'));
@@ -12264,7 +12672,7 @@ function viewHistorique(slot){
   filtered.slice(0,300).forEach(r=>{
     const d = new Date(r.at);
     const when = isNaN(d) ? '—' : d.toLocaleString('fr-FR',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
-    tbody.appendChild(el('tr',{},
+    tbody.appendChild(el('tr',{class:'row-click', tabindex:'0', 'data-fk':'hist-'+r.id, onclick:()=>openHistoryEntryModal(r)},
       el('td',{}, when),
       el('td',{}, r.vessel?vesselName(r.vessel):'—'),
       el('td',{html:`<span class="cat-tag">${esc(historyTypeLabel(r.entityType))}</span>`}),
@@ -12524,7 +12932,7 @@ const CSV_EXPORTS = [
   ]},
   {key:'crew', label:'Membres d’équipage', cols:[
     {label:'Nom', key:'nom'}, {label:'Prénom', key:'prenom'}, {label:'Poste', key:'poste'},
-    {label:'Téléphone', key:'telephone'}, {label:'E-mail', key:'email'}, {label:'Adresse postale', key:'adresse'}, {label:'Date de naissance', key:'dateNaissance'},
+    {label:'Téléphone', key:'telephone'}, {label:'E-mail', key:'email'}, {label:'Adresse postale', get:r=>['admin','technique'].includes(currentRole()) ? r.adresse||'' : ''}, {label:'Date de naissance', key:'dateNaissance'},
     {label:'Qualifié navires', get:r=>(r.qualifBateaux||[]).map(vesselName).join(', ')}, {label:'Habilitation grue', get:r=>r.habilGrue==='oui' ? 'Oui' : 'Non'}, {label:'Qualifié grue', get:r=>(r.qualifGrue||[]).map(vesselName).join(', ')},
     {label:'Aujourd’hui (planning)', get:r=>{ const x = crewPlanAt(r.id, todayISO()); return x ? crewPlanLabel(x) : ''; }}
   ]},
@@ -12660,7 +13068,7 @@ function exportSpecPdf(spec){ printSheet(buildExportSheet(spec)); }
    APP_BUILD est inscrit à la publication (tools/preparer-deploiement.ps1) :
    « aaaammjj-hhmm-empreinte ». Fichier ouvert en local : version non numérotée.
    La recherche de mise à jour lit version.json sur le site publié. */
-const APP_BUILD = '20261110-1738-ec1192487bf8';
+const APP_BUILD = '20261117-1603-e10ed2896e55';
 function appBuildInfo(build){
   const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(?:-(\w+))?/.exec(build||'');
   return m ? {build, date:m[1]+'-'+m[2]+'-'+m[3], time:m[4]+':'+m[5], label:m[3]+'/'+m[2]+'/'+m[1]+' à '+m[4]+'h'+m[5]} : null;
@@ -12749,7 +13157,7 @@ function affichageCard(){
     const always = NAV_ALWAYS.includes(n.route);
     const forced = !always && lockedVessel() && n.route==='#/comparatif';
     box.appendChild(el('label',{class:'check'},
-      el('input',{type:'checkbox', 'data-fk':'module-'+n.route.slice(2), checked: (always || (!hidden.has(n.route) && !forced)) ? '' : null, disabled: (always || forced) ? '' : null,
+      el('input',{type:'checkbox', 'data-fk':'module-'+n.route.slice(2), checked: (always || (!hidden.has(n.route) && !forced)) ? '' : null, disabled: (always || forced || navFixedByAdmin()) ? '' : null,
         onchange:e=>{
           const h = new Set(hiddenModules());
           if(e.target.checked) h.delete(n.route); else h.add(n.route);
@@ -12760,9 +13168,9 @@ function affichageCard(){
   });
   card.appendChild(el('div',{class:'settings-row', style:'display:block;'},
     el('div',{class:'lbl'},'Modules affichés dans le menu'),
-    el('div',{class:'desc', style:'margin-bottom:8px;'},'Décochez les modules inutiles sur cet appareil. Un module masqué reste accessible par son adresse et ses données sont conservées.'),
+    el('div',{class:'desc', style:'margin-bottom:8px;'}, navFixedByAdmin() ? 'Réglés par l’administrateur pour votre profil (sur tous vos appareils).' : 'Décochez les modules inutiles sur cet appareil. Un module masqué reste accessible par son adresse et ses données sont conservées.'),
     box,
-    el('button',{class:'btn btn-ghost btn-sm', type:'button', style:'margin-top:10px;', 'data-fk':'modules-tous', onclick:()=>{ prefStore.removeItem('sw_nav_hidden'); render(); }}, 'Tout réafficher')));
+    navFixedByAdmin() ? null : el('button',{class:'btn btn-ghost btn-sm', type:'button', style:'margin-top:10px;', 'data-fk':'modules-tous', onclick:()=>{ prefStore.removeItem('sw_nav_hidden'); render(); }}, 'Tout réafficher')));
   return card;
 }
 function viewParametres(slot){
@@ -13546,23 +13954,23 @@ autotest('Enregistrement', 'modifié ailleurs : fusion fiche par fiche, rien n�
 });
 autotest('Enregistrement', 'même champ modifié des deux côtés : on choisit, rien n’est écrit avant', async ()=>{
   const h = await connectFake({jobs:[{id:'j', titre:'Pompe', statut:'À faire', description:'base'}]});
-  editElsewhere(h, 'Marie', o=>{ o.jobs[0].statut = 'En cours'; o.jobs[0].description = 'Marie'; });
-  updateDoc('jobs','jobs','j',{statut:'Terminé'}); clearTimeout(saveTimer);
+  editElsewhere(h, 'Marie', o=>{ o.jobs[0].priorite = 'Urgente'; o.jobs[0].description = 'Marie'; });
+  updateDoc('jobs','jobs','j',{priorite:'Basse'}); clearTimeout(saveTimer);
   const writes = h.writes;
   const p = saveDataFile(false); await tick(30);
   const m = $('.modal');
-  expect.ok(m && m.textContent.includes('Statut') && m.textContent.includes('Terminé') && m.textContent.includes('En cours'), 'conflit présenté');
+  expect.ok(m && m.textContent.includes('Priorité') && m.textContent.includes('Basse') && m.textContent.includes('Urgente'), 'conflit présenté');
   expect.ok(!m.textContent.includes('Description'), 'le champ modifié d’un seul côté n’est pas un conflit');
   expect.equal(h.writes, writes, 'rien écrit avant le choix');
   m.querySelector('input[value=local]').click();
   confirmTopModal(); await p; await tick(20);
   const j = JSON.parse(h.text).jobs[0];
-  expect.ok(j.statut==='Terminé' && j.description==='Marie', 'mon statut + la description de Marie');
+  expect.ok(j.priorite==='Basse' && j.description==='Marie', 'ma priorité + la description de Marie');
 });
 autotest('Enregistrement', 'conflit en synchro automatique : alerte, puis choix à la demande ; Annuler n’écrit rien', async ()=>{
   const h = await connectFake({jobs:[{id:'j', titre:'Pompe', statut:'À faire'}]});
-  editElsewhere(h, 'Marie', o=>{ o.jobs[0].statut = 'En cours'; });
-  updateDoc('jobs','jobs','j',{statut:'Terminé'}); clearTimeout(saveTimer);
+  editElsewhere(h, 'Marie', o=>{ o.jobs[0].priorite = 'Urgente'; });
+  updateDoc('jobs','jobs','j',{priorite:'Basse'}); clearTimeout(saveTimer);
   const writes = h.writes;
   await saveDataFile(true);
   expect.ok(state.fileConflict && state.fileConflict.records===1, 'conflit en attente');
@@ -13573,7 +13981,7 @@ autotest('Enregistrement', 'conflit en synchro automatique : alerte, puis choix 
   const p = syncNow(); await tick(30);
   $('.modal .modal-actions .btn-ghost').click(); await p;
   expect.equal(h.writes, writes, 'Annuler : rien écrit');
-  expect.equal(state.jobs[0].statut, 'Terminé', 'ma saisie conservée');
+  expect.equal(state.jobs[0].priorite, 'Basse', 'ma saisie conservée');
 });
 autotest('Enregistrement', 'autorisation retirée : alerte « Réautoriser », puis enregistrement', async ()=>{
   const h = await connectFake();
@@ -13744,8 +14152,8 @@ autotest('Saisie à bord', 'écran : compteurs, jobs à faire en tête, exercice
   expect.equal(slot.querySelectorAll('.bord-meter').length, 3);
   expect.ok(slot.querySelector('.bord-meter').textContent.includes('1'), 'valeur du compteur');
   const sections = [...slot.querySelectorAll('.bord-section')].map(x=>x.querySelector('h2').textContent);
-  expect.equal(sections.join('|'), 'Relever un compteur|Défauts et jobs ponctuels ouverts|Jobs à faire|Exercices & drills');
-  const jobs = [...slot.querySelectorAll('.bord-section')[2].querySelectorAll('.bord-row-title')].map(x=>x.textContent);
+  expect.equal(sections.join('|'), 'Relever un compteur|Mes compteurs|Défauts et jobs ponctuels ouverts|Jobs à faire|Exercices & drills');
+  const jobs = [...slot.querySelectorAll('.bord-section')[3].querySelectorAll('.bord-row-title')].map(x=>x.textContent);
   expect.equal(jobs.join('|'), 'En retard', 'seulement les jobs à faire');
   slot.querySelector('.bord-meter').click();
   expect.ok($('.modal h3').textContent.includes('MP bâbord') && $('.modal [name=heures]').getAttribute('inputmode')==='decimal', 'relevé avec pavé numérique');
@@ -13852,7 +14260,12 @@ autotest('Effets visuels', 'jauges : aiguille = part du cycle consommée par le 
   expect.equal(Math.round(g.frac*100), 80); expect.equal(g.task.task, 'Vidange'); expect.equal(g.remaining, 100);
   const svg = meterGauge('men-du','mp1');
   expect.ok(svg.querySelector('.gauge-needle').style.transform.includes('54'), 'aiguille à 80 %');
-  expect.ok(svg.getAttribute('aria-label').includes('Prochain entretien dans 100 h'));
+  expect.ok(svg.getAttribute('aria-label').includes('Vidange : dans 100 h'));
+  expect.ok(svg.querySelector('.gauge-legend').textContent.includes('Vidange : dans 100 h'), 'légende toujours affichée');
+  expect.equal(gaugeZone(0.4)+'|'+gaugeZone(0.6)+'|'+gaugeZone(0.8), 'ok|proche|retard', 'vert, orange à 50 %, rouge à 75 %');
+  expect.ok(svg.classList.contains('gauge-retard') && svg.querySelectorAll('.gauge-zone').length===3, 'trois zones de couleur');
+  saveSetting('gaugeTasks', {items:{'men-du:mp1':state.tasks.find(t=>t.task==='Filtres').id}});
+  expect.equal(meterGaugeInfo('men-du','mp1').task.task, 'Filtres', 'job choisi par l’administrateur');
   expect.equal(meterGaugeInfo('viga','dg').frac, null);
   expect.ok(meterGauge('viga','dg').getAttribute('aria-label').includes('Aucun job'));
 });
@@ -14971,7 +15384,9 @@ autotest('Inventaire', 'job récurrent : pièces nécessaires proposées au « F
 autotest('Inventaire', 'job ponctuel terminé : pièces utilisées sorties une seule fois', async ()=>{
   const inv = addDoc('inventory','inventory',{vessel:'men-du', designation:'Joint', nature:'piece', quantite:5});
   const jid = addDoc('jobs','jobs',{vessel:'men-du', titre:'Fuite pompe', statut:'À faire', pieces:[{id:'p', inventoryId:inv, qty:1}]});
-  await quickCompleteJob(state.jobs.find(j=>j.id===jid));
+  const going = quickCompleteJob(state.jobs.find(j=>j.id===jid)); await tick(20);
+  expect.ok($('.modal').textContent.includes('Sortie des pièces'), 'sortie des pièces à valider');
+  confirmTopModal(); await going;
   expect.equal(state.inventory.find(i=>i.id===inv).quantite, 4);
   const j = state.jobs.find(x=>x.id===jid);
   expect.ok(j.piecesSorties && j.statut==='Terminé');
@@ -15295,6 +15710,7 @@ autotest('Inventaire', 'stock à terre (chantier) et vue par référence : stock
   addDoc('inventory','inventory',{vessel:'men-du', nature:'piece', designation:'Filtre GO', reference:'ff 5626', quantite:2, seuilAlerte:2, marque:'Scania'});
   addDoc('orders','orders',{vessel:'quehan', designation:'Filtre GO', quantite:3, statut:'Commandé', inventoryId:q});
   render(); state.route = '#/inventaire'; state._invLoc = ''; state._invNature = ''; state._invSearch = ''; state._invBrand = ''; renderContent();
+  $('#content-slot [data-fk=inv-autre]').click();
   $('#content-slot [data-fk=inv-lieu-chantier]').click();
   expect.equal(currentInvLoc(), 'site:chantier');
   $$('#content-slot button').find(b=>b.textContent.includes('Ajouter un article')).click();
@@ -15593,6 +16009,7 @@ function useFakeRelay(){
     if(url!==srv.url) return {ok:false, status:404, json:async()=>({})};
     const q = JSON.parse(opts.body), info = srv.tokens[q.token];
     srv.calls.push(q.action);
+    if(info){ info.seen = new Date().toISOString(); if(q.action==='put' || q.action==='putAtt') info.lastWrite = info.seen; }
     if(!info) return ok({error:'lien invalide', code:401});
     const admin = !!info.admin || info.role==='admin';
     const user = {name:info.name, role:admin ? 'admin' : info.role, profileId:info.profileId||'', admin, readOnly:!!info.readOnly};
@@ -15618,7 +16035,7 @@ function useFakeRelay(){
       case 'accounts': return ok({accounts:Object.entries(srv.tokens).map(([t,o])=>({ref:t.slice(0,8), name:o.name, role:o.admin ? 'admin' : o.role, profileId:o.profileId||'', hasPin:!!o.pin, self:t===q.token}))});
       case 'setPin': { if(q.ref && !admin) return ok({error:'réservé à l’administrateur', code:403}); const t = q.ref ? Object.keys(srv.tokens).find(x=>x.startsWith(q.ref)) : q.token; srv.tokens[t].pin = q.pin; return ok({ok:true}); }
       case 'pinLogin': { const t = Object.keys(srv.tokens).find(x=>x.startsWith(q.ref)); if(!t || !srv.tokens[t].pin) return ok({error:'ce compte n’a pas de code PIN', code:500}); return srv.tokens[t].pin===q.pin ? ok({token:t}) : ok({error:'code PIN incorrect', code:500}); }
-      case 'list': return ok({tokens:Object.entries(srv.tokens).map(([t,o])=>({ref:t.slice(0,8), name:o.name, role:o.role, profileId:o.profileId||'', admin:!!o.admin, readOnly:!!o.readOnly, self:t===q.token, link:srv.link(t), created:o.created||'', hasPin:!!o.pin, pin:o.pin||''}))});
+      case 'list': return ok({tokens:Object.entries(srv.tokens).map(([t,o])=>({ref:t.slice(0,8), name:o.name, role:o.role, profileId:o.profileId||'', admin:!!o.admin, readOnly:!!o.readOnly, self:t===q.token, link:srv.link(t), created:o.created||'', hasPin:!!o.pin, pin:o.pin||'', seen:o.seen||'', lastWrite:o.lastWrite||''}))});
       case 'revoke': Object.keys(srv.tokens).forEach(t=>{ if(t.startsWith(q.ref) && !srv.tokens[t].admin) delete srv.tokens[t]; }); return ok({ok:true});
     }
     return ok({error:'action inconnue', code:400});
@@ -16046,16 +16463,58 @@ autotest('Fusion', 'réalisations ajoutées des deux côtés : les deux gardées
 });
 autotest('Fusion', 'même champ modifié différemment : conflit, choix appliqué', ()=>{
   const base = snap({jobs:[{id:'j', titre:'Pompe', statut:'À faire'}]});
-  const local = snap({jobs:[{id:'j', titre:'Pompe', statut:'Terminé'}]});
-  const remote = snap({jobs:[{id:'j', titre:'Pompe', statut:'En cours'}]});
+  const local = snap({jobs:[{id:'j', titre:'Pompe', statut:'À faire', description:'Joint HS'}]});
+  const remote = snap({jobs:[{id:'j', titre:'Pompe', statut:'À faire', description:'Roulement HS'}]});
   let r = mergeSnapshots(base, local, remote);
   expect.equal(r.conflicts.length, 1);
-  expect.ok(r.conflicts[0].field==='statut' && r.conflicts[0].label==='Job ponctuel « Pompe »');
+  expect.ok(r.conflicts[0].field==='description' && r.conflicts[0].label==='Job ponctuel « Pompe »');
   applyConflictChoices(r.merged, r.conflicts, ['remote']);
-  expect.equal(r.merged.jobs[0].statut, 'En cours');
+  expect.equal(r.merged.jobs[0].description, 'Roulement HS');
   r = mergeSnapshots(base, local, remote);
   applyConflictChoices(r.merged, r.conflicts, ['local']);
-  expect.equal(r.merged.jobs[0].statut, 'Terminé');
+  expect.equal(r.merged.jobs[0].description, 'Joint HS');
+});
+autotest('Fusion', 'sans question : notifications lues des deux côtés, job récurrent fait deux fois, job ponctuel fait d’un côté', ()=>{
+  const base = snap({notifications:[{id:'n', title:'X', readBy:[]}],
+    tasks:[{id:'t', task:'Drill', lastDate:'2026-11-01', nextDate:'2026-12-01', completions:[{id:'c0', date:'2026-11-01'}]}],
+    jobs:[{id:'j', titre:'Pompe', statut:'À faire'}]});
+  const local = snap({notifications:[{id:'n', title:'X', readBy:['anne']}],
+    tasks:[{id:'t', task:'Drill', lastDate:'2026-11-10', nextDate:'2026-12-10', completions:[{id:'c0', date:'2026-11-01'}, {id:'c1', date:'2026-11-10'}]}],
+    jobs:[{id:'j', titre:'Pompe', statut:'Terminé', dateRealisation:'2026-11-12'}]});
+  const remote = snap({notifications:[{id:'n', title:'X', readBy:['bob']}],
+    tasks:[{id:'t', task:'Drill', lastDate:'2026-11-12', nextDate:'2026-12-12', completions:[{id:'c0', date:'2026-11-01'}, {id:'c2', date:'2026-11-12'}]}],
+    jobs:[{id:'j', titre:'Pompe', statut:'En cours'}]});
+  const {merged, conflicts} = mergeSnapshots(base, local, remote);
+  expect.equal(conflicts.length, 0, JSON.stringify(conflicts.map(c=>c.field)));
+  expect.equal(merged.notifications[0].readBy.sort().join(), 'anne,bob');
+  expect.ok(merged.tasks[0].lastDate==='2026-11-12' && merged.tasks[0].nextDate==='2026-12-12' && merged.tasks[0].completions.length===3, 'réalisation la plus récente');
+  expect.ok(merged.jobs[0].statut==='Terminé' && merged.jobs[0].dateRealisation==='2026-11-12', 'fait l’emporte');
+});
+autotest('Fusion', 'conflit tranché : fenêtre détaillée (avant, qui, quand), notification et journal pour l’administrateur', async ()=>{
+  addDoc('users','users',{nom:'Adm', role:'admin'}); prefStore.setItem('sw_profile_id', state.users[0].id);
+  addDoc('jobs','jobs',{vessel:'viga', titre:'Pompe', description:'Fuite'});
+  const base = syncDataOf(snapshotData());
+  state.syncBase = clone(base);
+  const remote = clone(snapshotData());
+  remote.jobs[0] = {...remote.jobs[0], description:'Roulement HS', updatedBy:'Bob', updatedAt:'2026-11-15T10:00:00.000Z'};
+  state.jobs[0].description = 'Joint HS'; state.jobs[0].updatedBy = 'Anne';
+  const going = mergeWithRemote(remote, false, 'sur Drive'); await tick(20);
+  const m = $$('.modal').pop();
+  expect.ok(m.textContent.includes('Avant') && m.textContent.includes('Fuite') && m.textContent.includes('par Bob') && m.textContent.includes('Viga'), 'avant, auteur, navire');
+  expect.ok(m.textContent.includes('0 / 1'), 'compteur de choix');
+  m.querySelector('[data-fk=choix-remote]').click();
+  expect.ok(m.textContent.includes('1 / 1'));
+  confirmTopModal();
+  const res = await going;
+  expect.equal(res.merged.jobs[0].description, 'Roulement HS');
+  const n = res.merged.notifications.find(x=>x.ref && x.ref.kind==='conflicts');
+  expect.ok(n && n.toRole==='admin' && n.conflicts[0].choice==='remote' && n.conflicts[0].base==='Fuite', 'notification pour l’administrateur');
+  applySnapshot(res.merged); state.syncBase = null;
+  render(); state.route = '#/notifications'; renderContent();
+  $('#content-slot [data-fk="voir-conflits-'+n.id+'"]').click();
+  const t = $('.modal [data-fk=journal-conflits]');
+  expect.ok(t && t.textContent.includes('Joint HS') && t.textContent.includes('Roulement HS') && t.textContent.includes('Autre version'), 'journal lisible');
+  closeAllModals(); state.route = '#/autotest';
 });
 autotest('Fusion', 'supprimée d’un côté, modifiée de l’autre : conflit, suppression ou conservation au choix', ()=>{
   const base = snap({jobs:[{id:'j', titre:'Pompe', statut:'À faire'}, {id:'k', titre:'K'}]});
@@ -17095,6 +17554,7 @@ autotest('Inventaire', 'articles sans lieu de stockage : lieu à terre retiré, 
   const a = addDoc('inventory','inventory',{vessel:'', site:'s-baden', designation:'Fût huile 15W40', quantite:2, nature:'consommable'});
   expect.equal(invLoc(state.inventory[0]), 'site:s-baden');
   state._invLoc = ''; render(); state.route = '#/inventaire'; renderContent();
+  $('#content-slot [data-fk=inv-autre]').click();
   $('#content-slot [data-fk=inv-lieux]').click();
   $('.modal [data-fk=retirer-lieu-0]').click();
   expect.ok($('.modal').textContent.includes('sans lieu de stockage'), 'prévenu avant d’enregistrer');
@@ -17103,6 +17563,7 @@ autotest('Inventaire', 'articles sans lieu de stockage : lieu à terre retiré, 
   expect.equal(state.inventory.find(i=>i.id===a).site, NO_SITE);
   expect.equal(invLocName(state.inventory[0]), 'Sans lieu de stockage');
   renderContent();
+  $('#content-slot [data-fk=inv-autre]').click();
   $('#content-slot [data-fk="inv-lieu-'+NO_SITE+'"]').click();
   expect.ok($('#content-slot [data-fk="ligne-'+a+'"]') && $('#content-slot .banner').textContent.includes('sans lieu'), 'onglet « Sans lieu »');
   // un article créé sans lieu
@@ -17521,17 +17982,17 @@ autotest('Pièces jointes', 'photo prise dans la fiche, sans quitter l’applica
 });
 autotest('Carburant', 'Viga : un moteur principal, une caisse MDO, deux caisses d’huile ; fenêtres adaptées au navire', async ()=>{
   addDoc('users','users',{nom:'A', role:'admin'}); prefStore.setItem('sw_profile_id', state.users[0].id);
-  expect.equal(vesselMeters('viga').map(m=>m.key+':'+m.label).join('|'), 'mp1:MP|dg:GE');
+  expect.equal(vesselMeters('viga').map(m=>m.key+':'+m.label).join('|'), 'mp1:MP', 'Viga : moteur principal seul, pas de GE');
   expect.equal(vesselMeters('men-du').length, 3, 'autres navires inchangés');
   expect.equal(vesselTanks('viga').map(t=>t.l).join('|'), 'Caisse MDO|Huile propulsion|Huile auxiliaire|Bidon de réserve');
   expect.equal(meterLabel('mp1', 'viga'), 'MP'); expect.equal(meterLabel('mp1', 'men-du'), 'MP bâbord');
   state.activeVessel = 'viga'; render(); state.route = '#/bord'; renderContent();
-  expect.equal($$('#content-slot .bord-meter').length, 2, 'deux compteurs à bord du Viga');
+  expect.equal($$('#content-slot .bord-meter').length, 1, 'un compteur à bord du Viga');
   openSoutageModal(null, {vessel:'viga'});
   const shown = ()=>$$('.modal tr[data-caisse]').filter(tr=>!tr.hidden).map(tr=>tr.dataset.caisse).join('|');
   expect.equal(shown(), 'go-bd|hu-bd|hu-aux|res-bidon', 'soutage : caisses du Viga');
   expect.equal($('.modal tr[data-caisse=go-bd] th').textContent, 'Caisse MDO');
-  expect.equal([...$('.modal [name=compteur]').options].map(o=>o.value).join('|'), 'mp1|dg');
+  expect.equal([...$('.modal [name=compteur]').options].map(o=>o.value).join('|'), 'mp1');
   const vs = $('.modal [name=vessel]'); vs.value = 'men-du'; vs.dispatchEvent(new Event('change'));
   expect.equal(shown(), 'go-bd|go-td|hu-bd|hu-td|hu-aux|res-bidon', 'autre navire : toutes ses caisses');
   vs.value = 'viga'; vs.dispatchEvent(new Event('change'));
@@ -17540,7 +18001,7 @@ autotest('Carburant', 'Viga : un moteur principal, une caisse MDO, deux caisses 
   expect.equal(s.lignes.map(l=>l.caisse).join('|'), 'go-bd', 'caisse masquée ignorée');
   openTankLevelModal('viga');
   expect.equal($$('.modal [name^="n-"]').map(i=>i.name).join('|'), 'n-go-bd|n-hu-bd|n-hu-aux|n-res-bidon', 'relevé : 4 niveaux');
-  expect.equal($$('.modal [name^="c-"]').length, 2, 'relevé : 2 compteurs');
+  expect.equal($$('.modal [name^="c-"]').length, 1, 'relevé : 1 compteur');
   closeAllModals();
   state.route = '#/autotest';
 });
@@ -17552,9 +18013,166 @@ autotest('Éléments', 'format 13 : le Viga n’a qu’un moteur principal et un
   const used = parseSnapshot(fileText({version:12, equipment:[{id:'t', vessel:'viga', name:'Moteur tribord', meter:'mp2'}], jobs:[{id:'j', vessel:'viga', titre:'x', equipmentId:'t'}]}));
   expect.ok(used.equipment.some(e=>e.id==='t' && !e.meter), 'gardé s’il est relié, sans compteur');
 });
+autotest('Droits', 'équipage : coûts masqués, échéances et pièces imposées, pièces à 0 ; adresse et fiches marins réservées', async ()=>{
+  const adm = addDoc('users','users',{nom:'A', role:'admin'}), cap = addDoc('users','users',{nom:'C', role:'capitaine'}), mat = addDoc('users','users',{nom:'M', role:'equipage'});
+  prefStore.setItem('sw_profile_id', mat); render(); state.route = '#/carburant'; renderContent();
+  expect.ok(document.body.classList.contains('no-costs'), 'équipage : coûts masqués');
+  prefStore.setItem('sw_profile_id', cap); renderContent();
+  expect.ok(!document.body.classList.contains('no-costs'), 'capitaine : coûts visibles');
+  const inv = addDoc('inventory','inventory',{vessel:'men-du', designation:'Filtre', nature:'piece', quantite:5});
+  const tid = addDoc('tasks','tasks',{vessel:'men-du', task:'Vidange', unit:'date', cycleDays:30, nextDate:'2026-12-01', lastDate:'2026-11-01', pieces:[{id:'p', inventoryId:inv, qty:2}]});
+  const t = state.tasks.find(x=>x.id===tid);
+  openTaskModal(t);
+  expect.ok($('.modal [name=nextDate]').readOnly, 'capitaine : échéance verrouillée');
+  expect.ok(!$('.modal [data-fk=ajouter-piece]'), 'capitaine : pas de pièce par défaut');
+  closeAllModals();
+  prefStore.setItem('sw_profile_id', mat);
+  openDoneModal(t);
+  expect.ok($('.modal [name=nextDate]').readOnly && $('.modal [data-fk=piece-0]').disabled, 'marin : échéance calculée, article imposé');
+  expect.ok(!$$('.modal button').some(b=>b.textContent==='Retirer'), 'marin : pas de « Retirer »');
+  const ld = $('.modal [name=lastDate]'); ld.value = '2026-11-20'; ld.dispatchEvent(new Event('change'));
+  expect.equal($('.modal [name=nextDate]').value, '2026-12-20', 'échéance recalculée');
+  $('.modal [data-fk=piece-qte-0]').value = '0'; $('.modal [data-fk=piece-qte-0]').dispatchEvent(new Event('input'));
+  confirmTopModal(); await tick(30);
+  expect.equal(state.inventory.find(i=>i.id===inv).quantite, 5, 'quantité 0 : rien ne sort du stock');
+  prefStore.setItem('sw_profile_id', adm);
+  openDoneModal(t); expect.ok($$('.modal button').some(b=>b.textContent==='Retirer'), 'administrateur : « Retirer »'); closeAllModals();
+  const m = addDoc('crew','crew',{nom:'Le Goff', adresse:'1 quai'});
+  prefStore.setItem('sw_profile_id', cap);
+  openCrewModal(state.crew.find(x=>x.id===m));
+  expect.ok(!$('.modal [name=adresse]'), 'capitaine : adresse masquée');
+  expect.ok($('.modal [name=nom]').readOnly || $('.modal [name=nom]').disabled || !$('.modal .modal-actions .btn-primary'), 'capitaine : fiche marin en lecture');
+  closeAllModals();
+  state.route = '#/equipements'; renderContent();
+  expect.ok(!$$('#content-slot button').some(b=>b.textContent.includes('Ajouter un élément')), 'capitaine : pas de création d’élément');
+  prefStore.setItem('sw_profile_id', adm); openCrewModal(state.crew.find(x=>x.id===m));
+  expect.equal($('.modal [name=adresse]').value, '1 quai', 'administrateur : adresse visible'); closeAllModals();
+  state.route = '#/autotest';
+});
+autotest('Heures', 'saisie au quart d’heure ; ticket au-delà de 5 h, forcé par l’administrateur ou le service technique seulement', async ()=>{
+  const key = hoursFixture();
+  expect.equal(QUARTERS.length, 96); expect.ok(QUARTERS.includes('07:45') && !QUARTERS.includes('07:50'));
+  saveWorkDay(key, '2026-10-20', [{debut:'08:00', fin:'13:00'}]);
+  expect.equal(dayTickets(workRecord(key, '2026-10-20')), 0, '5 h tout juste : pas de ticket');
+  saveWorkDay(key, '2026-10-21', [{debut:'08:00', fin:'13:15'}]);
+  expect.equal(dayTickets(workRecord(key, '2026-10-21')), 1, 'plus de 5 h : ticket');
+  addDoc('users','users',{nom:'Adm', role:'admin'});
+  const mat = addDoc('users','users',{nom:'T', role:'equipage', crewId:key.slice(5)}), tech = addDoc('users','users',{nom:'S', role:'technique'});
+  prefStore.setItem('sw_profile_id', mat);
+  openWorkDayModal(key, '2026-10-22');
+  expect.ok(!$('.modal [name=ticket]') && $('.modal [data-fk=ticket-auto]'), 'marin : pas de case ticket');
+  expect.equal($('.modal [data-fk=periode-debut-0]').tagName, 'SELECT', 'heures en liste au quart d’heure');
+  closeAllModals();
+  prefStore.setItem('sw_profile_id', tech);
+  openWorkDayModal(key, '2026-10-22'); expect.ok($('.modal [name=ticket]'), 'service technique : case ticket'); closeAllModals();
+});
+autotest('Planning', 'Mon planning et tri du planning par fonction ; onglets de l’équipage dans le nouvel ordre', async ()=>{
+  const cap = addDoc('crew','crew',{nom:'Zed', poste:'Capitaine'}), mat = addDoc('crew','crew',{nom:'Abel', poste:'Matelot'});
+  setCrewPlan(mat, todayISO(), 'V', 'matin');
+  const u = addDoc('users','users',{nom:'Abel', role:'equipage', crewId:mat});
+  prefStore.setItem('sw_profile_id', u); render(); state.route = '#/mon-planning'; state._myPlan = null; renderContent();
+  expect.ok($('#content-slot [data-fk=mon-planning]').textContent.includes('matin'), 'mon planning affiché');
+  const sub = $('#content-slot .subnav');
+  expect.equal($$('.subnav-item', sub).map(a=>a.textContent).join('|'), 'Mon planning|Planning équipage|Heures de travail|Certificats|Marins');
+  state.route = '#/planning'; state._plan = {start:mondayOf(todayISO()), weeks:8, vessel:'', view:'jour', dstart:todayISO(), sort:'fonction'}; renderContent();
+  const names = $$('#content-slot .pj-name, #content-slot tbody th').map(x=>x.textContent).filter(t=>/Zed|Abel/.test(t));
+  expect.ok(names.length && names[0].includes('Zed'), 'le capitaine en premier : '+names.join(','));
+  state.route = '#/autotest';
+});
+autotest('Inventaire', 'onglet « Autre » sur la ligne des navires, regroupement par élément, sortie de pièce avec recherche', async ()=>{
+  addDoc('users','users',{nom:'A', role:'admin'}); prefStore.setItem('sw_profile_id', state.users[0].id);
+  const eq = addDoc('equipment','equipment',{vessel:'viga', name:'Grue', categorie:'Auxiliaire'});
+  addDoc('inventory','inventory',{vessel:'viga', designation:'Câble grue', nature:'piece', quantite:2, equipmentId:eq});
+  addDoc('inventory','inventory',{vessel:'viga', designation:'Filtre gasoil', nature:'piece', quantite:4});
+  state.activeVessel = 'viga'; state._invLoc = ''; render(); state.route = '#/inventaire'; renderContent();
+  const tabs = $('#content-slot .company-tabs');
+  expect.ok(tabs && tabs.querySelector('[data-fk=onglet-navire-viga]') && tabs.querySelector('[data-fk=inv-autre]'), 'Autre sur la ligne des navires');
+  state._invSort = {sort:'article', dir:1, group:'categorie'}; renderContent();
+  expect.ok($$('#content-slot [data-fk=inv-groupe]').map(x=>x.textContent).join('|').includes('Auxiliaire'), 'regroupé par catégorie');
+  $('#content-slot [data-fk=tri-quantite]').click();
+  expect.equal(state._invSort.sort, 'quantite');
+  openStockPickModal('viga');
+  const q = $('.modal [data-fk=sortie-recherche]'); q.value = 'cable'; q.dispatchEvent(new Event('input'));
+  expect.equal($$('.modal .pick-row').length, 1, 'recherche');
+  expect.equal($('.modal [name=itemId]').value, state.inventory[0].id, 'seul résultat choisi');
+  q.value = ''; q.dispatchEvent(new Event('input'));
+  const sel = $('.modal [data-fk=sortie-element]'); sel.value = 'cat:Auxiliaire'; sel.dispatchEvent(new Event('change'));
+  expect.equal($$('.modal .pick-row').length, 1, 'filtre par catégorie');
+  fillModal({qty:'1'}); confirmTopModal(); await tick(20);
+  expect.equal(state.inventory[0].quantite, 1, 'sortie enregistrée');
+  state.route = '#/autotest';
+});
+autotest('Compteurs', 'mes compteurs : jauges personnelles par utilisateur, jobs à date ou au compteur', async ()=>{
+  const u = addDoc('users','users',{nom:'Anne', role:'equipage'}); prefStore.setItem('sw_profile_id', u);
+  testRestores.push(()=>prefStore.removeItem('sw_my_gauges:'+u));
+  const t = addDoc('tasks','tasks',{vessel:'men-du', task:'Graissage grue', unit:'date', cycleDays:30, lastDate:addDays(todayISO(), -20), nextDate:addDays(todayISO(), 10)});
+  state.activeVessel = 'men-du'; render(); state.route = '#/bord'; renderContent();
+  $('#content-slot [data-fk=ajouter-ma-jauge]').click(); confirmTopModal(); await tick(20);
+  renderContent();
+  const g = $('#content-slot [data-fk="ma-jauge-'+t+'"]');
+  expect.ok(g && g.querySelector('.gauge-legend').textContent.includes('dans 10 j'), 'jauge et légende');
+  expect.ok(g.querySelector('.gauge').classList.contains('proche'.replace(/^/, 'gauge-')), 'orange à 67 % du cycle');
+  state.route = '#/autotest';
+});
+autotest('Historique', 'onglets navires, détail d’une ligne et ouverture de la fiche', async ()=>{
+  addDoc('users','users',{nom:'A', role:'admin'}); prefStore.setItem('sw_profile_id', state.users[0].id);
+  const j = addDoc('jobs','jobs',{vessel:'viga', titre:'Pompe de cale'});
+  logHistory('jobs', j, 'Pompe de cale', 'modifié', 'viga', 'Statut : À faire → En cours · Priorité : Normale → Urgente');
+  logHistory('jobs', 'x', 'Autre', 'créé', 'men-du', '');
+  render(); state.route = '#/historique'; state._histVessel = ''; renderContent();
+  $('#content-slot [data-fk=hist-navire-viga]').click();
+  expect.equal($$('#content-slot tbody tr').length, 1, 'onglet Viga');
+  $('#content-slot tbody tr').click();
+  expect.ok($('.modal [data-fk=hist-detail-texte]').textContent.includes('Priorité : Normale → Urgente'), 'détail de la modification');
+  $('.modal [data-fk=hist-ouvrir]').click(); await tick(10);
+  expect.ok($('.modal').textContent.includes('Pompe de cale') && $('.modal [name=titre]'), 'fiche ouverte');
+  closeAllModals(); state._histVessel = ''; state.route = '#/autotest';
+});
+autotest('Arrêts techniques', 'travail : jobs ressemblants proposés, élément lié, job récurrent créé et relié', async ()=>{
+  addDoc('users','users',{nom:'A', role:'admin'}); prefStore.setItem('sw_profile_id', state.users[0].id);
+  const eq = addDoc('equipment','equipment',{vessel:'viga', name:'Moteur principal', categorie:'Moteurs'});
+  const t = addDoc('tasks','tasks',{vessel:'viga', task:'Changement anodes coque', unit:'date', equipmentId:eq});
+  expect.equal(similarJobs('viga', 'Remplacer les anodes', null)[0].rec.id, t, 'job ressemblant reconnu');
+  const w = {id:'w1', libelle:'Remplacer les anodes'};
+  let done = 0;
+  openWorkDetailModal(w, ()=>{ done++; }, 'viga');
+  expect.ok($('.modal [data-fk=jobs-ressemblants]').textContent.includes('Changement anodes coque'), 'proposé');
+  expect.ok($('.modal [name=lien]').options[1].value==='task:'+t, 'en tête de liste');
+  const top = ()=>$$('.modal').pop();
+  top().querySelector('[name=lien]').value = 'new-task'; top().querySelector('[name=lien]').dispatchEvent(new Event('change'));
+  top().querySelector('[name=nouveauCycle]').value = '365'; top().querySelector('[name=equipmentId]').value = 'cat:Moteurs';
+  confirmTopModal(); await tick(30);
+  const nt = state.tasks.find(x=>x.task==='Remplacer les anodes');
+  expect.ok(nt && nt.cycleDays===365 && nt.equipCat==='Moteurs' && w.taskId===nt.id && w.equipCat==='Moteurs' && done===1, 'créé, relié, élément gardé');
+});
+autotest('Profils', 'l’administrateur fixe les modules du menu d’un marin, sur tous ses appareils', async ()=>{
+  const adm = addDoc('users','users',{nom:'A', role:'admin'}), mat = addDoc('users','users',{nom:'M', role:'equipage'});
+  prefStore.setItem('sw_profile_id', adm);
+  openProfileModal(state.users.find(u=>u.id===mat));
+  const mode = $('.modal [data-fk=profil-menu-mode]'); mode.value = 'fixe'; mode.dispatchEvent(new Event('change'));
+  $('.modal [data-fk="profil-module-carte"]').click();
+  confirmTopModal(); await tick(20);
+  expect.equal(JSON.stringify(state.users.find(u=>u.id===mat).navHidden), '["#/carte"]');
+  prefStore.setItem('sw_profile_id', mat); render();
+  expect.ok(hiddenModules().includes('#/carte') && navFixedByAdmin(), 'appliqué au marin');
+  state.route = '#/parametres'; renderContent();
+  expect.ok($('#content-slot [data-fk=module-carte]').disabled, 'le marin ne peut plus le changer');
+  state.route = '#/autotest';
+});
+autotest('Relais', 'connexions récentes : en ligne, vu il y a…, dernière modification', async ()=>{
+  const srv = useFakeRelay();
+  await relayJoin({url:srv.url, token:srv.admin}); await tick(10);
+  const a = await relayCall('invite', {name:'Anne', role:'equipage', profileId:''});
+  srv.tokens[a.token].seen = new Date(Date.now()-3*3600*1000).toISOString();
+  render(); state.route = '#/profils'; await loadRelayLinks(true); renderContent();
+  const card = $('#content-slot [data-fk=connexions]');
+  expect.ok(card && card.textContent.includes('1 personne(s) en ligne'), 'administrateur en ligne');
+  expect.ok($('#content-slot [data-fk="connexion-'+a.ref+'"]').textContent.includes('vu il y a 3 h'), 'vu il y a 3 h');
+  state.route = '#/autotest';
+});
 autotest('Paramètres', 'version affichée avec sa date, recherche de mise à jour (version publiée plus récente)', async ()=>{
   expect.ok(appBuildInfo('20261024-1203-ff54f95a493b').label==='24/10/2026 à 12h03', 'date lue dans la version');
-  expect.equal(appBuildInfo('20261110-1738-ec1192487bf8'), null, 'fichier non publié');
+  expect.equal(appBuildInfo('20261117-1603-e10ed2896e55'), null, 'fichier non publié');
   render(); state.route = '#/parametres'; renderContent();
   const card = $('#content-slot [data-fk=carte-version]');
   expect.ok(card && $('[data-fk=version-app]', card).textContent.length>0, 'carte Version et mises à jour');
