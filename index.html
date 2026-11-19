@@ -5375,7 +5375,7 @@ function partsEditor(vessel, existing, opts){
   const canRemove = opts.canRemove!==false, canAdd = opts.canAdd!==false;
   const list = (existing||[]).map(p=>({id:uid(), inventoryId:p.inventoryId, qty:p.qty}));
   const wrap = el('div',{class:'parts-editor'});
-  const items = ()=>state.inventory.filter(i=>i.vessel===vessel).sort((a,b)=>(a.designation||'').localeCompare(b.designation||'','fr'));
+  const items = ()=>state.inventory.filter(i=>i.vessel===vessel && !i.masque).sort((a,b)=>(a.designation||'').localeCompare(b.designation||'','fr'));
   function draw(){
     wrap.innerHTML = '';
     wrap.appendChild(el('div',{class:'rh-title'}, (opts.label||'Pièces')+' ('+list.length+')'));
@@ -6137,6 +6137,62 @@ function customInventoryNatures(){ const s = setting('inventoryNatures'); return
 function inventoryNatures(){ return [...BASE_INVENTORY_NATURES, ...customInventoryNatures().filter(x=>!BASE_INVENTORY_NATURES.some(b=>b.v===x.v))]; }
 function inventoryNatureLabel(i){ const n = inventoryNatures().find(x=>x.v===i.nature); return n ? n.l : (i.nature ? i.nature : 'Non classé'); }
 function inventoryIsLow(r){ return r.seuilAlerte!=null && r.seuilAlerte!=='' && Number(r.quantite) <= Number(r.seuilAlerte); }
+/* ---------- articles communs ----------
+   Consommables et types créés par l'utilisateur (appro…) : un article (articleId) existe sur chaque navire et
+   chaque lieu à terre ; la fiche est commune (désignation, référence, fournisseur…), chaque lieu garde sa
+   quantité, son minimum, son emplacement, son élément et ses mouvements. Pièces de rechange et matériel de
+   levage restent propres à chaque lieu. */
+const isSharedNature = n=>!!n && n!=='piece' && n!=='levage';
+const SHARED_ARTICLE_FIELDS = ['designation','reference','refFournisseur','marque','fournisseur','categorie','unite','nature','notes','conditionnement'];
+function invAllLocs(){ return [...VESSELS.map(v=>v.key), ...inventorySites().map(s=>'site:'+s.v)]; }
+const locFields = loc=>loc.startsWith('site:') ? {vessel:'', site:loc.slice(5)} : {vessel:loc, site:''};
+/* crée l'article commun là où il manque (identifiant fixe : deux appareils créent la même fiche, sans doublon) */
+function ensureSharedArticles(){
+  if(!uiWritable() || !canInput()) return 0;
+  const groups = new Map();
+  state.inventory.forEach(r=>{ if(r.articleId){ if(!groups.has(r.articleId)) groups.set(r.articleId, []); groups.get(r.articleId).push(r); } });
+  const locs = invAllLocs(), now = new Date().toISOString();
+  let n = 0;
+  groups.forEach((list, aid)=>{
+    const src = list[0];
+    if(!isSharedNature(src.nature)) return;
+    const have = new Set(list.map(invLoc));
+    locs.filter(l=>!have.has(l)).forEach(l=>{
+      const id = 'inv:'+aid+':'+l;
+      if(state.inventory.some(x=>x.id===id)) return;
+      const rec = {id, articleId:aid, ...Object.fromEntries(SHARED_ARTICLE_FIELDS.map(k=>[k, src[k] ?? ''])), ...locFields(l),
+        quantite:0, seuilAlerte:null, enPlace:null, emplacement:'', equipmentId:null, equipCat:null, mouvements:[], createdAt:now, updatedAt:now, updatedBy:state.me.name||null};
+      state.inventory.push(rec); n++;
+    });
+  });
+  if(n) scheduleSave();
+  return n;
+}
+/* doublons à relier : même référence (sinon même désignation) sur plusieurs lieux, pas encore article commun */
+function inventoryDuplicateGroups(){
+  const m = new Map();
+  state.inventory.filter(r=>!r.articleId && isSharedNature(r.nature) && invLoc(r)!=='site:'+NO_SITE).forEach(r=>{ const k = invGroupKey(r); if(!m.has(k)) m.set(k, []); m.get(k).push(r); });
+  return [...m.values()].filter(l=>new Set(l.map(invLoc)).size>1 && new Set(l.map(invLoc)).size===l.length);
+}
+function linkInventoryGroup(list){
+  const aid = uid(), ref = list.slice().sort((a,b)=>SHARED_ARTICLE_FIELDS.filter(k=>b[k]).length - SHARED_ARTICLE_FIELDS.filter(k=>a[k]).length)[0];
+  const shared = Object.fromEntries(SHARED_ARTICLE_FIELDS.map(k=>[k, ref[k] ?? '']));
+  list.forEach(r=>updateDoc('inventory','inventory', r.id, {articleId:aid, ...shared}));
+  logHistory('inventory', ref.id, ref.designation, 'relié en article commun', null, list.map(invLocName).join(', '));
+}
+function openInventoryDuplicatesModal(){
+  const groups = inventoryDuplicateGroups();
+  if(!groups.length){ toast('Aucun doublon à relier.'); return; }
+  const picked = new Set();
+  const box = el('div',{}, el('div',{class:'hint', style:'margin:0 0 8px;'}, 'Chaque ligne regroupe le même article sur plusieurs lieux (même référence, sinon même désignation). Cochez ceux à relier : la fiche devient commune (celle qui est la plus complète est gardée), chaque lieu garde sa quantité, son emplacement et ses mouvements.'),
+    ...groups.map((g, i)=>el('label',{class:'conflict-opt', style:'margin-bottom:6px;', 'data-fk':'doublon-'+i},
+      el('input',{type:'checkbox', 'data-fk':'relier-'+i, onchange:e=>{ if(e.target.checked) picked.add(i); else picked.delete(i); }}),
+      el('span',{class:'conflict-opt-body'}, el('strong',{}, g[0].designation+(g[0].reference ? ' — réf. '+g[0].reference : '')),
+        el('span',{class:'hint', style:'margin:0;'}, g.map(r=>invLocName(r)+' : '+(r.quantite ?? 0)+' '+(r.unite||'')+(r.designation!==g[0].designation ? ' (« '+r.designation+' »)' : '')).join(' · '))))));
+  openModal({title:groups.length+' doublon(s) à relier', wide:true, submitLabel:'Relier la sélection', body:box, readOnly:!canEdit(),
+    validate: ()=>picked.size ? null : 'Cochez au moins un article.',
+    onSubmit: async ()=>{ [...picked].forEach(i=>linkInventoryGroup(groups[i])); ensureSharedArticles(); toast(picked.size+' article(s) relié(s)', 'success'); }});
+}
 function liftingStatus(r){ return r.nature==='levage' && r.dateVerification ? certStatus(r.dateVerification) : null; }
 
 function inventoryMovesSection(r){
@@ -6169,11 +6225,12 @@ function currentInvLoc(){ return state._invLoc && state._invLoc.startsWith('site
 /* commandes en cours d'un ou plusieurs articles */
 function openOrderQty(ids){ return state.orders.filter(o=>orderIsOpen(o) && ids.includes(o.inventoryId)).reduce((s,o)=>s+(Number(o.quantite)||0), 0); }
 /* même article dans plusieurs lieux : même référence, sinon même désignation */
-function invGroupKey(r){ const ref = normText(r.reference).replace(/\s+/g, ''); return ref ? 'r:'+ref : 'd:'+normText(r.designation); }
+function invGroupKey(r){ if(r.articleId) return 'a:'+r.articleId; const ref = normText(r.reference).replace(/\s+/g, ''); return ref ? 'r:'+ref : 'd:'+normText(r.designation); }
 function invBrands(){ return [...new Set(state.inventory.map(r=>String(r.marque||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'fr')); }
 
 function viewInventaire(slot){
   slot.innerHTML='';
+  ensureSharedArticles();
   const byRef = state._invLoc==='__ref';
   const loc = byRef ? null : currentInvLoc();
   const onShore = !!loc && loc.startsWith('site:');
@@ -6194,7 +6251,13 @@ function viewInventaire(slot){
     el('option',{value:''},'Toutes marques'), ...invBrands().map(b=>el('option',{value:b}, b)));
   brandSel.value = state._invBrand || '';
   if(byRef) return viewInventoryByRef(slot, brandSel);
-  const rows = state.inventory.filter(r=>inLoc(r, loc));
+  const masked = state.inventory.filter(r=>inLoc(r, loc) && r.masque);
+  const rows = state.inventory.filter(r=>inLoc(r, loc) && !r.masque);
+  if(masked.length) slot.appendChild(el('div',{class:'banner', role:'status', 'data-fk':'inv-masques'}, el('div',{style:'flex:1;'}, masked.length+' article(s) commun(s) retiré(s) de ce lieu.'),
+    canEdit() ? el('button',{class:'btn btn-ghost btn-sm', type:'button', onclick:()=>{ masked.forEach(r=>updateDoc('inventory','inventory', r.id, {masque:false})); renderContent(); }}, 'Les remettre') : null));
+  const dups = inventoryDuplicateGroups().length;
+  if(dups && canEdit()) slot.appendChild(el('div',{class:'banner', role:'status', 'data-fk':'inv-doublons'}, el('div',{style:'flex:1;'}, dups+' article(s) existent en double sur plusieurs lieux : reliez-les pour n’avoir qu’une liste commune.'),
+    el('button',{class:'btn btn-ghost btn-sm', type:'button', 'data-fk':'voir-doublons', onclick:openInventoryDuplicatesModal}, 'Voir les doublons')));
   const unclassified = rows.filter(r=>!r.nature).length;
   const natureTabs = [['','Tous', rows.length], ...inventoryNatures().map(n=>[n.v, n.pl||n.l, rows.filter(r=>r.nature===n.v).length])];
   if(unclassified) natureTabs.push(['__aucune','Non classés', unclassified]);
@@ -6280,7 +6343,7 @@ function viewInventaire(slot){
       el('td',{style:'text-align:right;white-space:nowrap;'},
         lift && lift!=='ok' ? el('span',{html:'<span class="badge '+lift+'">'+(lift==='retard' ? 'Vérification dépassée' : 'Vérification proche')+'</span> '}) : null,
         el('span',{html: low ? '<span class="badge retard">Seuil bas</span>' : '<span class="badge ok">OK</span>'}),
-        canInput() ? el('button',{class:'btn btn-ghost btn-sm', style:'margin-left:6px;', 'aria-label':'Sortie de stock : '+r.designation, 'data-fk':'sortie-'+r.id, onclick:(e)=>{e.stopPropagation(); openStockMoveModal(r);}}, 'Sortie') : null,
+        canInput() ? el('button',{class:'btn btn-ghost btn-sm', style:'margin-left:6px;', 'aria-label':'Mettre à jour le stock : '+r.designation, 'data-fk':'sortie-'+r.id, onclick:(e)=>{e.stopPropagation(); openStockMoveModal(r);}}, 'Mettre à jour') : null,
         canInput() && Number(r.quantite)>0 ? el('button',{class:'btn btn-ghost btn-sm', style:'margin-left:6px;', 'aria-label':'Transférer : '+r.designation, 'data-fk':'transfert-'+r.id, onclick:(e)=>{e.stopPropagation(); openStockTransferModal(r);}}, 'Transférer') : null,
         (low && canEdit()) ? el('button',{class:'btn btn-ghost btn-sm', style:'margin-left:6px;', 'aria-label':'Commander '+r.designation, onclick:(e)=>{e.stopPropagation(); openOrderModalFromLowStock(r);}}, 'Commander') : null
       )
@@ -6394,6 +6457,8 @@ function openInventoryModal(r, prefill){
   if(!locOptions.some(o=>o.v===loc)) locOptions.push({v:loc, l:invLocName(loc)});
   const body = el('div',{},
     field('Lieu (navire ou stock à terre)','vessel','select', locOptions, loc),
+    isEdit && r.articleId ? el('div',{class:'hint', 'data-fk':'article-commun'}, 'Article commun à tous les navires et lieux à terre : la désignation, la référence, le fournisseur, la famille et l’unité se modifient partout ; la quantité, le minimum, l’emplacement et l’élément sont propres à ce lieu.') : null,
+    !isEdit ? field('Article commun','common','select', [{v:'',l:'Oui : créé sur tous les navires et lieux à terre (consommables, appro…)'},{v:'non',l:'Non : seulement ce lieu'}], '', 'sans effet pour les pièces de rechange et le matériel de levage, propres à chaque lieu') : null,
     fieldRow(
       field('Type d’article','nature','select', [...(isEdit && !r.nature ? [{v:'',l:'— à classer —'}] : []), ...natures], base.nature || (isEdit ? '' : 'consommable'),
         'consommable, pièce de rechange, matériel de levage… (types modifiables par le service technique)'),
@@ -6434,7 +6499,17 @@ function openInventoryModal(r, prefill){
     wide: isEdit,
     readOnly: !canEdit(),
     validate: (data)=>requireField(data,'designation','La désignation') || requireField(data,'nature','Le type d’article'),
-    onDelete: isEdit ? async ()=>{ await deleteDoc('inventory','inventory', r.id); await logHistory('inventory', r.id, r.designation, 'supprimé', r.vessel||null); toast('Article supprimé'); } : null,
+    onDelete: isEdit ? async ()=>{
+      if(r.articleId){
+        const how = await choiceModal('Article commun', '« '+r.designation+' » existe sur tous les navires et lieux à terre.', [
+          {value:'ici', primary:true, label:'Le retirer de '+invLocName(r)+' seulement', hint:'Il reste sur les autres lieux ; « Les remettre » le fait revenir.'},
+          {value:'partout', label:'Le supprimer partout', hint:'Sur tous les navires et lieux à terre, avec leurs quantités.'}]);
+        if(how==='ici'){ updateDoc('inventory','inventory', r.id, {masque:true}); logHistory('inventory', r.id, r.designation, 'retiré de ce lieu', r.vessel||null, invLocName(r)); toast('Article retiré de ce lieu'); }
+        else if(how==='partout'){ state.inventory.filter(x=>x.articleId===r.articleId).forEach(x=>deleteDoc('inventory','inventory', x.id)); logHistory('inventory', r.id, r.designation, 'supprimé partout', null); toast('Article supprimé partout'); }
+        return;
+      }
+      await deleteDoc('inventory','inventory', r.id); await logHistory('inventory', r.id, r.designation, 'supprimé', r.vessel||null); toast('Article supprimé');
+    } : null,
     onSubmit: async (data)=>{
       if(String(data.vessel).startsWith('site:')){ data.site = data.vessel.slice(5); data.vessel = ''; if(!String(data.equipmentId).startsWith('cat:')) data.equipmentId = ''; }
       else data.site = '';
@@ -6443,12 +6518,21 @@ function openInventoryModal(r, prefill){
       if(data.nature!=='levage'){ ['cmu','longueur','etat','dateMiseEnService','dateControle','dateVerification'].forEach(k=>{ data[k] = base[k]||''; }); }
       else if(!data.dateVerification && data.dateControle) data.dateVerification = addDays(data.dateControle, 365);
       if(isEdit){
+        if(r.articleId){ data.vessel = r.vessel||''; data.site = r.site||''; } // un article commun ne change pas de lieu
         await updateDoc('inventory','inventory', r.id, data);
         const detail = diffSummary(r, data, [['nature','Type'],['reference','Référence'],['quantite','Quantité'],['seuilAlerte','Stock minimum'],['enPlace','En place'],['emplacement','Emplacement'],['dateVerification','Vérification']]);
         await logHistory('inventory', r.id, data.designation, 'modifié', data.vessel||null, detail);
+        // fiche commune : reportée sur les autres lieux
+        if(r.articleId){
+          const shared = Object.fromEntries(SHARED_ARTICLE_FIELDS.filter(k=>k in data).map(k=>[k, data[k]]));
+          state.inventory.filter(x=>x.articleId===r.articleId && x.id!==r.id).forEach(x=>{ if(SHARED_ARTICLE_FIELDS.some(k=>k in shared && !sameValue(x[k], shared[k]))) updateDoc('inventory','inventory', x.id, shared); });
+        }
       }else{
         data.mouvements = [];
+        if(isSharedNature(data.nature) && data.common!=='non') data.articleId = uid();
+        delete data.common;
         const id = await addDoc('inventory','inventory', data);
+        if(data.articleId) ensureSharedArticles();
         await logHistory('inventory', id, data.designation, 'créé', data.vessel||null, data.vessel ? '' : 'stock à terre : '+siteName(data.site));
       }
       toast(isEdit?'Article mis à jour':'Article ajouté');
@@ -6701,72 +6785,112 @@ function openStockTransferModal(item){
       toast(q+' '+(item.unite||'')+' transféré(s) vers '+invLocName(dest), 'success');
     }});
 }
+/* mise à jour du stock d'un article : soit le nombre de pièces utilisées, soit la nouvelle quantité comptée
+   (l'écart est enregistré comme un mouvement, l'historique reste juste) */
+function stockModeFields(item, mode){
+  const box = el('div',{},
+    field('Mise à jour','mode','select', [{v:'utilise', l:'J’ai utilisé des pièces (sortie)'}, {v:'nouvelle', l:'Je saisis la nouvelle quantité en stock (comptage)'}], mode||'utilise'),
+    el('div',{'data-fk':'mode-utilise'}, field('Quantité utilisée','qty','number', null, 1)),
+    el('div',{'data-fk':'mode-nouvelle'}, field('Nouvelle quantité en stock','newQty','number', null, item ? item.quantite ?? '' : '', 'quantité réellement présente'+(item && item.unite ? ' ('+item.unite+')' : ''))));
+  const sel = $('[name=mode]', box);
+  const show = ()=>{ $('[data-fk=mode-utilise]', box).style.display = sel.value==='nouvelle' ? 'none' : ''; $('[data-fk=mode-nouvelle]', box).style.display = sel.value==='nouvelle' ? '' : 'none'; };
+  sel.addEventListener('change', show); show();
+  box._refresh = it=>{ const n = $('[name=newQty]', box); if(n && it) n.value = it.quantite ?? ''; };
+  return box;
+}
+function stockModeValidate(item, data){
+  if(!item) return 'Choisissez un article.';
+  if(data.mode==='nouvelle'){
+    if(data.newQty==='' || !(Number(data.newQty)>=0)) return 'Indiquez la nouvelle quantité (0 ou plus).';
+    if(Number(data.newQty)===(Number(item.quantite)||0)) return 'La quantité est inchangée.';
+    return null;
+  }
+  const q = Number(data.qty);
+  if(!(q>0)) return 'Indiquez une quantité positive.';
+  if(q > (Number(item.quantite)||0)) return 'Quantité supérieure au stock ('+(item.quantite ?? 0)+') : saisissez plutôt la nouvelle quantité comptée.';
+  return null;
+}
+function stockModeApply(item, data){
+  const live = state.inventory.find(x=>x.id===item.id) || item;
+  const motif = data.motif.trim();
+  if(data.mode==='nouvelle'){
+    const diff = Math.round((Number(data.newQty) - (Number(live.quantite)||0))*1000)/1000;
+    stockMove(live, diff, motif || 'Mise à jour du stock (comptage)', {date:data.date||todayISO(), comptage:true});
+    toast('Stock mis à jour : '+data.newQty+(live.unite ? ' '+live.unite : ''), 'success');
+  }else{
+    stockMove(live, -Number(data.qty), motif, {date:data.date||todayISO()});
+    toast('Sortie enregistrée', 'success');
+  }
+}
 function openStockMoveModal(item, opts){
   const entree = !!(opts && opts.entree);
+  if(!entree){
+    const body = el('div',{},
+      el('div',{class:'hint', style:'margin-bottom:10px;'}, item.designation+' · '+invLocName(item)+' · en stock : '+(item.quantite ?? 0)+' '+(item.unite||'')),
+      stockModeFields(item, opts && opts.mode),
+      field('Date','date','date', null, todayISO()),
+      field('Motif','motif','text', null, '', 'ex. vidange MP bâbord, inventaire de fin de mois'));
+    openModal({title:'Mettre à jour le stock', body, submitLabel:'Valider', readOnly:!canInput(),
+      validate: data=>stockModeValidate(state.inventory.find(x=>x.id===item.id) || item, data),
+      onSubmit: async data=>stockModeApply(item, data)});
+    return;
+  }
   const body = el('div',{},
     el('div',{class:'hint', style:'margin-bottom:10px;'}, item.designation+' · '+invLocName(item)+' · en stock : '+(item.quantite ?? 0)+' '+(item.unite||'')),
     fieldRow(
-      field(entree ? 'Quantité reçue' : 'Quantité utilisée','qty','number', null, 1),
+      field('Quantité reçue','qty','number', null, 1),
       field('Date','date','date', null, todayISO())),
-    field('Motif','motif','text', null, '', entree ? 'ex. réception commande, inventaire' : 'ex. vidange MP bâbord, remplacement filtre')
+    field('Motif','motif','text', null, '', 'ex. réception commande, inventaire')
   );
   openModal({
-    title: entree ? 'Entrée de stock' : 'Sortie de stock',
+    title: 'Entrée de stock',
     body, submitLabel:'Valider',
-    readOnly: entree ? !canEdit() : !canInput(),
-    validate: data=>{
-      const q = Number(data.qty);
-      if(!(q>0)) return 'Indiquez une quantité positive.';
-      if(!entree && q > (Number(item.quantite)||0)) return 'Quantité supérieure au stock ('+(item.quantite ?? 0)+') : corrigez d’abord le stock de l’article.';
-      return null;
-    },
+    readOnly: !canEdit(),
+    validate: data=>Number(data.qty)>0 ? null : 'Indiquez une quantité positive.',
     onSubmit: async data=>{
       const live = state.inventory.find(x=>x.id===item.id) || item;
-      stockMove(live, entree ? Number(data.qty) : -Number(data.qty), data.motif.trim(), {date:data.date||todayISO()});
-      toast(entree ? 'Entrée enregistrée' : 'Sortie enregistrée', 'success');
+      stockMove(live, Number(data.qty), data.motif.trim(), {date:data.date||todayISO()});
+      toast('Entrée enregistrée', 'success');
     }
   });
 }
 /* saisie à bord : choisir l'article, puis sortie de stock */
 function openStockPickModal(vessel){
-  const items = state.inventory.filter(i=>i.vessel===vessel).sort((a,b)=>(a.designation||'').localeCompare(b.designation||'','fr'));
+  const items = state.inventory.filter(i=>i.vessel===vessel && !i.masque).sort((a,b)=>(a.designation||'').localeCompare(b.designation||'','fr'));
   if(!items.length){ toast('Aucun article dans l’inventaire de '+vesselName(vessel)); return; }
   // recherche et filtre par élément ou catégorie du navire, au lieu d'une longue liste déroulante
   const hidden = el('input',{type:'hidden', name:'itemId', value:''});
   const list = el('div',{class:'pick-list', role:'listbox', 'aria-label':'Articles', 'data-fk':'sortie-liste'});
   const q = el('input',{type:'search', class:'select', placeholder:'Rechercher : désignation, référence, emplacement…', 'aria-label':'Rechercher un article', 'data-fk':'sortie-recherche', style:'width:100%;'});
-  const eqSel = el('select',{class:'select', 'aria-label':'Élément ou catégorie', 'data-fk':'sortie-element', style:'width:100%;margin-top:6px;'},
+  // deux filtres : type d'article (consommables, pièces, approvisionnement…) et élément ou catégorie du navire
+  const natSel = el('select',{class:'select', 'aria-label':'Type d’article', 'data-fk':'sortie-type', style:'flex:1;min-width:150px;'},
+    el('option',{value:''}, 'Tous les types'), ...inventoryNatures().filter(n=>items.some(i=>i.nature===n.v)).map(n=>el('option',{value:n.v}, n.pl||n.l)));
+  const eqSel = el('select',{class:'select', 'aria-label':'Élément ou catégorie', 'data-fk':'sortie-element', style:'flex:1;min-width:150px;'},
     el('option',{value:''}, 'Tous les éléments et catégories'), ...equipmentLinkOptions(vessel).slice(1).map(o=>el('option',{value:o.v}, o.l)));
+  const filters = el('div',{style:'display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;'}, natSel, eqSel);
   const draw = ()=>{
     const words = normText(q.value).split(/\s+/).filter(Boolean);
-    const shown = items.filter(i=>(!eqSel.value || matchesEquipment(i, eqSel.value)) && words.every(w=>normText([i.designation, i.reference, i.refFournisseur, i.marque, i.emplacement, i.categorie, equipLabel(i)].join(' ')).includes(w)));
+    const shown = items.filter(i=>(!natSel.value || i.nature===natSel.value) && (!eqSel.value || matchesEquipment(i, eqSel.value)) && words.every(w=>normText([i.designation, i.reference, i.refFournisseur, i.marque, i.emplacement, i.categorie, equipLabel(i)].join(' ')).includes(w)));
     list.innerHTML = '';
-    if(!shown.some(i=>i.id===hidden.value)) hidden.value = shown.length===1 ? shown[0].id : '';
+    if(!shown.some(i=>i.id===hidden.value)){ hidden.value = shown.length===1 ? shown[0].id : ''; if(hidden.value && typeof modeBox!=='undefined') modeBox._refresh(shown[0]); }
     shown.slice(0, 60).forEach(i=>list.appendChild(el('button',{type:'button', role:'option', 'aria-selected':String(hidden.value===i.id), class:'pick-row'+(hidden.value===i.id ? ' active' : ''), 'data-fk':'sortie-'+i.id,
-      onclick:()=>{ hidden.value = i.id; draw(); }},
+      onclick:()=>{ hidden.value = i.id; draw(); modeBox._refresh(i); }},
       el('span',{}, i.designation, el('span',{class:'hint', style:'margin:0;display:block;'}, [i.reference ? 'réf. '+i.reference : '', equipLabel(i), i.emplacement].filter(Boolean).join(' · '))),
       el('span',{style:'white-space:nowrap;'}, (i.quantite ?? 0)+' '+(i.unite||'')))));
     if(!shown.length) list.appendChild(el('div',{class:'hint', style:'padding:8px 10px;margin:0;'}, 'Aucun article ne correspond.'));
     else if(shown.length>60) list.appendChild(el('div',{class:'hint', style:'padding:8px 10px;margin:0;'}, (shown.length-60)+' autre(s) : précisez la recherche.'));
   };
-  q.addEventListener('input', draw); eqSel.addEventListener('change', draw);
+  const modeBox = stockModeFields(null, 'utilise');
+  q.addEventListener('input', draw); eqSel.addEventListener('change', draw); natSel.addEventListener('change', draw);
   draw();
   const body = el('div',{},
-    el('div',{class:'field'}, el('label',{}, 'Article'), q, eqSel, list, hidden),
-    fieldRow(field('Quantité utilisée','qty','number', null, 1), field('Date','date','date', null, todayISO())),
+    el('div',{class:'field'}, el('label',{}, 'Article'), q, filters, list, hidden),
+    modeBox,
+    field('Date','date','date', null, todayISO()),
     field('Motif','motif','text', null, '', 'ex. vidange MP bâbord, remplacement filtre'));
   openModal({title:'Sortie de pièce — '+vesselName(vessel), body, submitLabel:'Valider', readOnly: !canInput(),
-    validate: d=>{
-      const it = state.inventory.find(i=>i.id===d.itemId), q = Number(d.qty);
-      if(!it) return 'Choisissez un article.';
-      if(!(q>0)) return 'Indiquez une quantité positive.';
-      if(q > (Number(it.quantite)||0)) return 'Quantité supérieure au stock ('+(it.quantite ?? 0)+').';
-      return null;
-    },
-    onSubmit: async d=>{
-      stockMove(state.inventory.find(i=>i.id===d.itemId), -Number(d.qty), d.motif.trim(), {date:d.date||todayISO()});
-      toast('Sortie enregistrée', 'success');
-    }});
+    validate: d=>stockModeValidate(state.inventory.find(i=>i.id===d.itemId), d),
+    onSubmit: async d=>stockModeApply(state.inventory.find(i=>i.id===d.itemId), d)});
 }
 /* types d'articles : les trois de base sont fixes, les autres se créent,
    se renomment et se retirent (s'ils ne sont plus utilisés) */
@@ -7211,9 +7335,12 @@ function copyEquipmentId(id, toVessel){
   return same ? same.id : null;
 }
 /* conflits avant copie : une fiche de même intitulé existe déjà sur le navire de destination */
+/* destinations d'une copie : les navires, et pour l'inventaire les lieux à terre (chantier…) */
+function copyTargets(kind){ return [...ALL_VESSELS, ...(kind==='inventory' ? inventorySites().map(s=>({key:'site:'+s.v, name:s.l+' (à terre)'})) : [])]; }
+const copyTargetName = (kind, k)=>(copyTargets(kind).find(t=>t.key===k)||{}).name || vesselName(k);
 function copyConflicts(kind, records, targets){
-  const def = COPY_KINDS[kind], out = [];
-  targets.forEach(to=>records.forEach(r=>{ if(r.vessel!==to && state[kind].some(x=>x.vessel===to && normText(def.title(x))===normText(def.title(r)))) out.push({r, to}); }));
+  const def = COPY_KINDS[kind], out = [], locOf = x=>kind==='inventory' ? invLoc(x) : x.vessel;
+  targets.forEach(to=>records.forEach(r=>{ if(locOf(r)!==to && state[kind].some(x=>locOf(x)===to && normText(def.title(x))===normText(def.title(r)))) out.push({r, to}); }));
   return out;
 }
 function copyRecordsToVessels(kind, records, targets, opts){
@@ -7221,8 +7348,11 @@ function copyRecordsToVessels(kind, records, targets, opts){
   let n = 0;
   const clash = opts && opts.skipConflicts ? new Set(copyConflicts(kind, records, targets).map(c=>c.r.id+'>'+c.to)) : new Set();
   targets.forEach(to=>records.forEach(r=>{
-    if(r.vessel===to || clash.has(r.id+'>'+to)) return;
-    const copy = def.make(clone(r), to, opts||{});
+    if((kind==='inventory' ? invLoc(r) : r.vessel)===to || clash.has(r.id+'>'+to)) return;
+    const copy = def.make(clone(r), to.startsWith('site:') ? '' : to, opts||{});
+    if(to.startsWith('site:')) Object.assign(copy, {vessel:'', site:to.slice(5), equipmentId:null});
+    else if(kind==='inventory') copy.site = '';
+    if(kind==='inventory') delete copy.articleId;
     delete copy.id; delete copy.createdAt; delete copy.updatedAt; delete copy.updatedBy;
     const id = addDoc(kind, kind, copy);
     logHistory(kind, id, def.title(copy), def.hist+vesselName(r.vessel)+')', to);
@@ -7237,9 +7367,9 @@ function openCopyToVesselModal(kind, fromVessel, preselect){
   const conflictBox = el('div',{'data-fk':'copie-conflits'});
   function drawConflicts(){
     conflictBox.innerHTML = '';
-    const targets = ALL_VESSELS.filter(v=>{ const i = $('[name="cible-'+v.key+'"]', targetsBox); return i && i.checked; }).map(v=>v.key);
+    const targets = copyTargets(kind).filter(v=>{ const i = $('[name="cible-'+v.key+'"]', targetsBox); return i && i.checked; }).map(v=>v.key);
     const list = copyConflicts(kind, state[kind].filter(r=>picked.has(r.id)), targets);
-    if(list.length) conflictBox.appendChild(el('div',{class:'banner', role:'status'}, el('div',{style:'flex:1;'}, list.length+' conflit(s) : '+list.slice(0, 8).map(c=>'« '+def.title(c.r)+' » existe déjà sur '+vesselName(c.to)).join(' ; ')+(list.length>8 ? '…' : ''))));
+    if(list.length) conflictBox.appendChild(el('div',{class:'banner', role:'status'}, el('div',{style:'flex:1;'}, list.length+' conflit(s) : '+list.slice(0, 8).map(c=>'« '+def.title(c.r)+' » existe déjà sur '+copyTargetName(kind, c.to)).join(' ; ')+(list.length>8 ? '…' : ''))));
   }
   let q = '';
   const listBox = el('div',{class:'copy-list'});
@@ -7258,7 +7388,7 @@ function openCopyToVesselModal(kind, fromVessel, preselect){
   }
   function drawTargets(){
     targetsBox.innerHTML = '';
-    ALL_VESSELS.filter(v=>v.key!==from).forEach(v=>targetsBox.appendChild(el('label',{class:'check'},
+    copyTargets(kind).filter(v=>v.key!==from).forEach(v=>targetsBox.appendChild(el('label',{class:'check'},
       el('input',{type:'checkbox', name:'cible-'+v.key, value:'1', 'data-fk':'cible-'+v.key, onchange:drawConflicts}), v.name)));
   }
   function drawCount(){ countEl.textContent = picked.size+' fiche(s) choisie(s)'; drawConflicts(); }
@@ -7288,10 +7418,10 @@ function openCopyToVesselModal(kind, fromVessel, preselect){
       return null;
     },
     onSubmit: async data=>{
-      const targets = ALL_VESSELS.filter(v=>{ const i = $('[name="cible-'+v.key+'"]', body); return i && i.checked; }).map(v=>v.key);
+      const targets = copyTargets(kind).filter(v=>{ const i = $('[name="cible-'+v.key+'"]', body); return i && i.checked; }).map(v=>v.key);
       const records = state[kind].filter(r=>picked.has(r.id));
       const n = copyRecordsToVessels(kind, records, targets, {keepQty: data.keepQty==='1', skipConflicts: data.conflits!=='copier'});
-      toast(n+' fiche(s) copiée(s) vers '+targets.map(vesselName).join(', '), 'success');
+      toast(n+' fiche(s) copiée(s) vers '+targets.map(k=>copyTargetName(kind, k)).join(', '), 'success');
     }
   });
 }
@@ -13068,7 +13198,7 @@ function exportSpecPdf(spec){ printSheet(buildExportSheet(spec)); }
    APP_BUILD est inscrit à la publication (tools/preparer-deploiement.ps1) :
    « aaaammjj-hhmm-empreinte ». Fichier ouvert en local : version non numérotée.
    La recherche de mise à jour lit version.json sur le site publié. */
-const APP_BUILD = '20261117-1603-e10ed2896e55';
+const APP_BUILD = '20261119-1310-f75c85bd924d';
 function appBuildInfo(build){
   const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(?:-(\w+))?/.exec(build||'');
   return m ? {build, date:m[1]+'-'+m[2]+'-'+m[3], time:m[4]+':'+m[5], label:m[3]+'/'+m[2]+'/'+m[1]+' à '+m[4]+'h'+m[5]} : null;
@@ -18096,6 +18226,8 @@ autotest('Inventaire', 'onglet « Autre » sur la ligne des navires, regroupemen
   expect.equal($$('.modal .pick-row').length, 1, 'recherche');
   expect.equal($('.modal [name=itemId]').value, state.inventory[0].id, 'seul résultat choisi');
   q.value = ''; q.dispatchEvent(new Event('input'));
+  const nat = $('.modal [data-fk=sortie-type]'); nat.value = 'piece'; nat.dispatchEvent(new Event('change'));
+  expect.equal($$('.modal .pick-row').length, 2, 'filtre par type');
   const sel = $('.modal [data-fk=sortie-element]'); sel.value = 'cat:Auxiliaire'; sel.dispatchEvent(new Event('change'));
   expect.equal($$('.modal .pick-row').length, 1, 'filtre par catégorie');
   fillModal({qty:'1'}); confirmTopModal(); await tick(20);
@@ -18170,9 +18302,72 @@ autotest('Relais', 'connexions récentes : en ligne, vu il y a…, dernière mod
   expect.ok($('#content-slot [data-fk="connexion-'+a.ref+'"]').textContent.includes('vu il y a 3 h'), 'vu il y a 3 h');
   state.route = '#/autotest';
 });
+autotest('Inventaire', 'mise à jour du stock : pièces utilisées, ou nouvelle quantité comptée (écart enregistré)', async ()=>{
+  addDoc('users','users',{nom:'M', role:'equipage'}); addDoc('users','users',{nom:'A', role:'admin'}); prefStore.setItem('sw_profile_id', state.users[0].id);
+  const id = addDoc('inventory','inventory',{vessel:'viga', designation:'Filtre à huile', nature:'piece', quantite:6, unite:'pce'});
+  const it = ()=>state.inventory.find(i=>i.id===id);
+  openStockMoveModal(it());
+  fillModal({qty:'2'}); confirmTopModal(); await tick(20);
+  expect.equal(it().quantite, 4, 'pièces utilisées');
+  openStockMoveModal(it());
+  const mode = $('.modal [name=mode]'); mode.value = 'nouvelle'; mode.dispatchEvent(new Event('change'));
+  expect.equal($('.modal [name=newQty]').value, '4', 'quantité actuelle proposée');
+  fillModal({newQty:'4'}); confirmTopModal(); await tick(10);
+  expect.ok($('.modal [role=alert]').textContent.includes('inchangée'), 'quantité inchangée refusée');
+  fillModal({newQty:'9'}); confirmTopModal(); await tick(20);
+  expect.equal(it().quantite, 9, 'nouvelle quantité');
+  const m = it().mouvements[0];
+  expect.ok(m.qty===5 && m.comptage && m.motif.includes('comptage'), 'écart de +5 enregistré comme comptage');
+  openStockPickModal('viga');
+  const sel = $('.modal [name=mode]'); sel.value = 'nouvelle'; sel.dispatchEvent(new Event('change'));
+  expect.equal($('.modal [name=newQty]').value, '9', 'saisie à bord : article seul choisi, quantité proposée');
+  fillModal({newQty:'7'}); confirmTopModal(); await tick(20);
+  expect.equal(it().quantite, 7, 'saisie à bord : nouvelle quantité');
+});
+autotest('Inventaire', 'article commun : créé partout, fiche modifiée partout, quantités propres à chaque lieu ; retrait d’un lieu', async ()=>{
+  addDoc('users','users',{nom:'A', role:'admin'}); prefStore.setItem('sw_profile_id', state.users[0].id);
+  saveSetting('inventorySites', {items:[{v:'chantier', l:'Chantier'}]});
+  openInventoryModal(null, {loc:'viga', nature:'consommable'});
+  fillModal({designation:'Huile 15W40', nature:'consommable', quantite:'20', unite:'L'}); confirmTopModal(); await tick(20);
+  const all = state.inventory.filter(i=>i.designation==='Huile 15W40');
+  expect.equal(all.length, VESSELS.length+1, 'sur chaque navire et au chantier');
+  expect.equal(new Set(all.map(i=>i.articleId)).size, 1, 'un seul article');
+  expect.equal(all.find(i=>i.vessel==='viga').quantite, 20); expect.equal(all.find(i=>i.vessel==='men-du').quantite, 0, 'quantités propres à chaque lieu');
+  const md = all.find(i=>i.vessel==='men-du');
+  openInventoryModal(md); fillModal({reference:'15W40-B', quantite:'7'}); confirmTopModal(); await tick(20);
+  expect.ok(state.inventory.filter(i=>i.articleId===md.articleId).every(i=>i.reference==='15W40-B'), 'référence modifiée partout');
+  expect.equal(state.inventory.find(i=>i.vessel==='viga' && i.articleId===md.articleId).quantite, 20, 'quantité du Viga inchangée');
+  // retrait d'un seul lieu
+  patch(window, 'choiceModal', async ()=>'ici');
+  openInventoryModal(state.inventory.find(i=>i.id===md.id));
+  $('.modal .btn-danger-text').click(); await tick(10); confirmTopModal(); await tick(20);
+  expect.ok(state.inventory.find(i=>i.id===md.id).masque && state.inventory.filter(i=>i.articleId===md.articleId).length===VESSELS.length+1, 'retiré du Men Du seulement');
+  // pièce de rechange : propre au lieu
+  openInventoryModal(null, {loc:'viga', nature:'piece'});
+  fillModal({designation:'Turbo', nature:'piece', quantite:'1'}); confirmTopModal(); await tick(20);
+  expect.equal(state.inventory.filter(i=>i.designation==='Turbo').length, 1, 'pièce de rechange : un seul lieu');
+});
+autotest('Inventaire', 'doublons existants proposés un par un, reliés en article commun ; copie vers le chantier', async ()=>{
+  addDoc('users','users',{nom:'A', role:'admin'}); prefStore.setItem('sw_profile_id', state.users[0].id);
+  saveSetting('inventorySites', {items:[{v:'chantier', l:'Chantier'}]});
+  const a = addDoc('inventory','inventory',{vessel:'viga', designation:'Graisse', reference:'GR-1', nature:'consommable', quantite:3});
+  const b = addDoc('inventory','inventory',{vessel:'quehan', designation:'Graisse marine', reference:'GR-1', nature:'consommable', quantite:5, fournisseur:'Marine Diesel'});
+  expect.equal(inventoryDuplicateGroups().length, 1);
+  openInventoryDuplicatesModal();
+  $('.modal [data-fk=relier-0]').click(); confirmTopModal(); await tick(20);
+  const aid = state.inventory.find(i=>i.id===a).articleId;
+  expect.ok(aid && aid===state.inventory.find(i=>i.id===b).articleId, 'reliés');
+  expect.ok(state.inventory.find(i=>i.id===a).quantite===3 && state.inventory.find(i=>i.id===b).quantite===5, 'quantités gardées');
+  expect.equal(state.inventory.find(i=>i.id===a).fournisseur, 'Marine Diesel', 'fiche la plus complète gardée');
+  expect.equal(state.inventory.filter(i=>i.articleId===aid).length, VESSELS.length+1, 'complété sur les autres lieux');
+  const p = addDoc('inventory','inventory',{vessel:'viga', designation:'Démarreur', nature:'piece', quantite:1});
+  expect.equal(copyRecordsToVessels('inventory', [state.inventory.find(i=>i.id===p)], ['site:chantier'], {keepQty:false}), 1);
+  const c = state.inventory.find(i=>i.designation==='Démarreur' && i.site==='chantier');
+  expect.ok(c && !c.vessel && c.quantite===0, 'copié vers le chantier');
+});
 autotest('Paramètres', 'version affichée avec sa date, recherche de mise à jour (version publiée plus récente)', async ()=>{
   expect.ok(appBuildInfo('20261024-1203-ff54f95a493b').label==='24/10/2026 à 12h03', 'date lue dans la version');
-  expect.equal(appBuildInfo('20261117-1603-e10ed2896e55'), null, 'fichier non publié');
+  expect.equal(appBuildInfo('20261119-1310-f75c85bd924d'), null, 'fichier non publié');
   render(); state.route = '#/parametres'; renderContent();
   const card = $('#content-slot [data-fk=carte-version]');
   expect.ok(card && $('[data-fk=version-app]', card).textContent.length>0, 'carte Version et mises à jour');
